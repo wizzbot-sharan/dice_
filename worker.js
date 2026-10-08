@@ -47,10 +47,18 @@ let cooldownTimer = null;
 
 // --- LOGGING HELPERS ---
 function sysLog(msg) {
-    console.log(`[SYSTEM] ${msg}`);
+    const text = `[SYSTEM] ${msg}`;
+    console.log(text);
+    if (process.env.DATABASE_URL) {
+        queryDB('INSERT INTO dicev2_logs (applywizz_id, message) VALUES ($1, $2)', ['SYSTEM', text]).catch(() => {});
+    }
 }
 function log(applywizz_id, msg) {
-    console.log(`[${applywizz_id}] ${msg}`);
+    const text = `[${applywizz_id}] ${msg}`;
+    console.log(text);
+    if (process.env.DATABASE_URL) {
+        queryDB('INSERT INTO dicev2_logs (applywizz_id, message) VALUES ($1, $2)', [applywizz_id, text]).catch(() => {});
+    }
 }
 
 function printDashboard() {
@@ -528,6 +536,12 @@ async function initializeDatabase() {
             time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             email_proof JSONB
         );
+        CREATE TABLE IF NOT EXISTS dicev2_logs (
+            id SERIAL PRIMARY KEY,
+            applywizz_id VARCHAR,
+            message TEXT,
+            time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
     `);
 }
 
@@ -607,6 +621,95 @@ async function startJobRun() {
     sysLog('Starting Queue Manager...');
     checkQueue();
 }
+
+// --- EXPRESS DASHBOARD SERVER ---
+const express = require('express');
+const cors = require('cors');
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+app.get('/api/stats', async (req, res) => {
+    try {
+        const { from, to } = req.query;
+        let timeFilter = "";
+        const params = [];
+        if (from && to) {
+            // we assume from/to are valid timestamp strings
+            timeFilter = "WHERE time >= $1 AND time <= $2";
+            params.push(from, to);
+        }
+        
+        const clientsRes = await queryDB(`
+            SELECT applywizz_id, 
+                   SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) as completed_count,
+                   SUM(CASE WHEN status = 'Failed' THEN 1 ELSE 0 END) as failed_count
+            FROM dicev2_applied_jobs
+            ${timeFilter}
+            GROUP BY applywizz_id
+        `, params);
+
+        const totalRes = await queryDB(`
+            SELECT 
+                   SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) as total_completed,
+                   SUM(CASE WHEN status = 'Failed' THEN 1 ELSE 0 END) as total_failed
+            FROM dicev2_applied_jobs
+            ${timeFilter}
+        `, params);
+
+        res.json({
+            totals: totalRes[0] || { total_completed: 0, total_failed: 0 },
+            clients: clientsRes
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/jobs/:applywizz_id', async (req, res) => {
+    try {
+        const { applywizz_id } = req.params;
+        const { from, to } = req.query;
+        let timeFilter = "";
+        const params = [applywizz_id];
+        if (from && to) {
+            timeFilter = "AND time >= $2 AND time <= $3";
+            params.push(from, to);
+        }
+
+        const jobs = await queryDB(`
+            SELECT * FROM dicev2_applied_jobs
+            WHERE applywizz_id = $1 ${timeFilter}
+            ORDER BY time DESC
+        `, params);
+        res.json(jobs);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/logs', async (req, res) => {
+    try {
+        const logs = await queryDB(`
+            SELECT * FROM dicev2_logs
+            ORDER BY time DESC
+            LIMIT 500
+        `);
+        res.json(logs);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`[SYSTEM] Dashboard server running on port ${PORT}`);
+});
 
 // --- SERVER ENTRY POINT ---
 if (process.env.CRON_SCHEDULE) {
