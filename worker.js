@@ -712,6 +712,8 @@ app.listen(PORT, '0.0.0.0', () => {
 });
 
 // --- SERVER ENTRY POINT ---
+initializeDatabase().catch(e => console.error("DB Init Error:", e));
+
 if (process.env.CRON_SCHEDULE) {
     sysLog(`Starting Railway Node-Cron Scheduler: ${process.env.CRON_SCHEDULE}`);
     cron.schedule(process.env.CRON_SCHEDULE, () => {

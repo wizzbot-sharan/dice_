@@ -22,7 +22,7 @@ function App() {
       const data = await res.json();
       setStats({
         totals: data.totals || { total_completed: 0, total_failed: 0 },
-        clients: data.clients || []
+        clients: Array.isArray(data.clients) ? data.clients : []
       });
     } catch (e) {
       console.error(e);
@@ -34,7 +34,7 @@ function App() {
     try {
       const res = await fetch('/api/logs');
       const data = await res.json();
-      setLogs(data || []);
+      setLogs(Array.isArray(data) ? data : []);
     } catch (e) {}
   };
 
@@ -48,7 +48,7 @@ function App() {
     try {
       const res = await fetch(url);
       const data = await res.json();
-      setClientJobs(data || []);
+      setClientJobs(Array.isArray(data) ? data : []);
     } catch (e) {
       console.error(e);
     }
