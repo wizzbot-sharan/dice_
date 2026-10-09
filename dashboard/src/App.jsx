@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { format } from 'date-fns';
-import { Activity, CheckCircle, XCircle, Users, Calendar, X, Play } from 'lucide-react';
+import { Activity, CheckCircle, XCircle, Users, Calendar, X, Play, RefreshCw } from 'lucide-react';
 
 function App() {
   const [stats, setStats] = useState({ totals: { total_completed: 0, total_failed: 0 }, clients: [] });
@@ -11,6 +11,23 @@ function App() {
   const [clientJobs, setClientJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isTriggering, setIsTriggering] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  const syncClients = async () => {
+    if (!window.confirm("Are you sure you want to sync all clients from the API?")) return;
+    setIsSyncing(true);
+    try {
+      const res = await fetch('/api/sync-clients', { method: 'POST' });
+      if (res.ok) {
+        alert('Client Sync started! Watch the Live System Logs.');
+      } else {
+        alert('Failed to start sync.');
+      }
+    } catch (e) {
+      alert('Network error.');
+    }
+    setIsSyncing(false);
+  };
 
   const triggerAutomation = async () => {
     if (!window.confirm("Are you sure you want to manually trigger the automation?")) return;
@@ -93,6 +110,15 @@ function App() {
           </div>
           
           <div className="flex items-center gap-4">
+            <button 
+              onClick={syncClients}
+              disabled={isSyncing}
+              className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
+              {isSyncing ? 'Starting Sync...' : 'Sync Clients'}
+            </button>
+
             <button 
               onClick={triggerAutomation}
               disabled={isTriggering}
