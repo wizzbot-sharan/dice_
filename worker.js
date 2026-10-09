@@ -798,6 +798,11 @@ function mapClientKeys(client) {
         
         mapped[key] = parseArrayIfNeeded(v);
     }
+    
+    // Satisfy NOT NULL constraints in DB
+    mapped.raw_payload = JSON.stringify(client);
+    mapped.imported_at = new Date().toISOString();
+    
     return mapped;
 }
 
@@ -810,6 +815,11 @@ function mapProfileKeys(profile) {
         
         mapped[key] = parseArrayIfNeeded(v);
     }
+    
+    // Satisfy NOT NULL constraints in DB
+    mapped.raw_payload = JSON.stringify(profile);
+    if (!mapped['Time Zone']) mapped['Time Zone'] = 'UTC';
+    
     return mapped;
 }
 
