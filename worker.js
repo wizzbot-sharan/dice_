@@ -702,6 +702,22 @@ app.get('/api/logs', async (req, res) => {
     }
 });
 
+app.post('/api/trigger', async (req, res) => {
+    try {
+        if (jobQueue.length > 0 || masterBacklog.length > 0) {
+            return res.status(400).json({ error: 'A job run is already currently active.' });
+        }
+        sysLog('Manual trigger activated via Dashboard.');
+        
+        // Fire and forget so we don't hold the HTTP request open for hours
+        startJobRun().catch(err => sysLog(`MANUAL RUN ERROR: ${err.message}`));
+        
+        res.json({ message: 'Automation started successfully.' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.use((req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });

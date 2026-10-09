@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { format } from 'date-fns';
-import { Activity, CheckCircle, XCircle, Users, Calendar, X } from 'lucide-react';
+import { Activity, CheckCircle, XCircle, Users, Calendar, X, Play } from 'lucide-react';
 
 function App() {
   const [stats, setStats] = useState({ totals: { total_completed: 0, total_failed: 0 }, clients: [] });
@@ -10,6 +10,24 @@ function App() {
   const [selectedClient, setSelectedClient] = useState(null);
   const [clientJobs, setClientJobs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [isTriggering, setIsTriggering] = useState(false);
+
+  const triggerAutomation = async () => {
+    if (!window.confirm("Are you sure you want to manually trigger the automation?")) return;
+    setIsTriggering(true);
+    try {
+      const res = await fetch('/api/trigger', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(`Error: ${data.error}`);
+      } else {
+        alert('Automation started! Watch the Live System Logs.');
+      }
+    } catch (e) {
+      alert('Failed to trigger automation.');
+    }
+    setIsTriggering(false);
+  };
 
   const fetchStats = async () => {
     setLoading(true);
@@ -74,21 +92,32 @@ function App() {
             <p className="text-gray-500">Real-time automation statistics</p>
           </div>
           
-          <div className="flex items-center gap-2 bg-white p-2 rounded-lg shadow-sm border border-gray-100">
-            <Calendar className="w-5 h-5 text-gray-400 ml-2" />
-            <input 
-              type="date" 
-              value={fromDate} 
-              onChange={e => setFromDate(e.target.value)}
-              className="px-2 py-1 outline-none text-sm bg-transparent"
-            />
-            <span className="text-gray-300">-</span>
-            <input 
-              type="date" 
-              value={toDate} 
-              onChange={e => setToDate(e.target.value)}
-              className="px-2 py-1 outline-none text-sm bg-transparent"
-            />
+          <div className="flex items-center gap-4">
+            <button 
+              onClick={triggerAutomation}
+              disabled={isTriggering}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors disabled:opacity-50"
+            >
+              <Play className="w-4 h-4" />
+              {isTriggering ? 'Starting...' : 'Run Automation'}
+            </button>
+
+            <div className="flex items-center gap-2 bg-white p-2 rounded-lg shadow-sm border border-gray-100">
+              <Calendar className="w-5 h-5 text-gray-400 ml-2" />
+              <input 
+                type="date" 
+                value={fromDate} 
+                onChange={e => setFromDate(e.target.value)}
+                className="px-2 py-1 outline-none text-sm bg-transparent"
+              />
+              <span className="text-gray-300">-</span>
+              <input 
+                type="date" 
+                value={toDate} 
+                onChange={e => setToDate(e.target.value)}
+                className="px-2 py-1 outline-none text-sm bg-transparent"
+              />
+            </div>
           </div>
         </div>
 
