@@ -21,4 +21,4 @@ COPY . .
 COPY --from=frontend-builder /app/dashboard/dist ./public
 
 # Start the Express server + Cron Worker
-CMD ["node", "worker.js"]
+CMD ["node", "--expose-gc", "worker.js"]

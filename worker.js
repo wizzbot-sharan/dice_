@@ -5,6 +5,7 @@ const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const cron = require('node-cron');
 const fs = require('fs');
 const path = require('path');
+const { exec } = require('child_process');
 
 // --- DATABASE SETUP ---
 async function queryDB(text, params) {
@@ -43,6 +44,9 @@ let activeUsers = new Set();
 let activeWorkers = 0;
 const MAX_WORKERS = 5;
 let globalBrowser = null;
+let jobsProcessedSinceRestart = 0;
+let isBrowserRestarting = false;
+const BROWSER_RESTART_LIMIT = 50;
 let cooldownTimer = null;
 
 // --- LOGGING HELPERS ---
@@ -479,7 +483,42 @@ async function runAutomation(job) {
 }
 
 // --- QUEUE MANAGER ---
+
+async function performBrowserRestart() {
+    try {
+        if (globalBrowser) {
+            sysLog('Closing Chromium to clear Memory/RAM leak...');
+            await globalBrowser.close().catch(()=>{});
+            globalBrowser = null;
+        }
+    } catch (e) {
+        sysLog(`Error closing browser: ${e.message}`);
+    }
+    
+    sysLog('Relaunching fresh Chromium instance...');
+    const isHeadless = process.env.HEADLESS !== 'false';
+    globalBrowser = await chromium.launch({ headless: isHeadless });
+    
+    jobsProcessedSinceRestart = 0;
+    isBrowserRestarting = false;
+    
+    sysLog('Browser restarted successfully. Resuming queue...');
+    checkQueue();
+}
+
 async function checkQueue() {
+    if (isBrowserRestarting) {
+        if (activeWorkers === 0) await performBrowserRestart();
+        return;
+    }
+
+    if (jobsProcessedSinceRestart >= BROWSER_RESTART_LIMIT) {
+        sysLog(`Reached ${BROWSER_RESTART_LIMIT} tabs. Pausing queue to safely restart Chromium and free RAM...`);
+        isBrowserRestarting = true;
+        if (activeWorkers === 0) await performBrowserRestart();
+        return;
+    }
+
     if (activeWorkers >= MAX_WORKERS) return;
 
     const nextJob = jobQueue.find(j => j.status === 'PENDING' && !activeUsers.has(j.applywizz_id));
@@ -487,6 +526,7 @@ async function checkQueue() {
 
     activeUsers.add(nextJob.applywizz_id);
     activeWorkers++;
+    jobsProcessedSinceRestart++;
     printDashboard();
 
     runAutomation(nextJob).finally(() => {});
@@ -515,10 +555,30 @@ function startCooldownEngine() {
 
         if (jobQueue.length === 0 && masterBacklog.length === 0 && activeWorkers === 0) {
             clearInterval(cooldownTimer);
-            sysLog("All queues empty and all jobs complete. Shutting down browser.");
-            if (globalBrowser) await globalBrowser.close();
-            // Do not process.exit(0) here because the Railway server must stay alive for the next Cron!
-            sysLog("Standing by for next Cron trigger...");
+            sysLog("All queues empty and all jobs complete. Initiating Aggressive RAM Cleanup.");
+            
+            if (globalBrowser) {
+                await globalBrowser.close().catch(() => {});
+                globalBrowser = null; 
+            }
+            
+            activeUsers.clear();
+            clientSuccessCounts = {};
+            jobsProcessedSinceRestart = 0;
+            isBrowserRestarting = false;
+            
+            exec('pkill -f chrome', (err) => {
+                if (!err) sysLog("Assassinated stray Chrome zombie processes.");
+                
+                if (global.gc) {
+                    global.gc();
+                    sysLog("Forced V8 Garbage Collection complete.");
+                } else {
+                    sysLog("Garbage Collection not exposed.");
+                }
+                
+                sysLog("Chromium terminated and Memory flushed. Standing by for next Cron trigger...");
+            });
         }
     }, 10000); 
 }
