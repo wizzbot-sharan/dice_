@@ -152,7 +152,7 @@ async function precheckZohoConnections(clientsArray) {
     sysLog('Running Zoho API Pre-Check...');
     let apiUsers = [];
     const controller = new AbortController();
-    const timeout = setTimeout(() => { controller.abort(); }, 15000);
+    const timeout = setTimeout(() => { controller.abort(); }, 60000);
     try {
         const res = await fetch('https://zoho-mail-reader.onrender.com/api/zoho/ui/users', { signal: controller.signal });
         clearTimeout(timeout);
