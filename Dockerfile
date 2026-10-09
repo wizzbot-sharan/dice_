@@ -7,7 +7,7 @@ COPY dashboard/ ./
 RUN npm run build
 
 # Stage 2: Final Production Playwright Image
-FROM mcr.microsoft.com/playwright:v1.44.0-jammy
+FROM mcr.microsoft.com/playwright:v1.64.0-jammy
 WORKDIR /app
 
 # Copy root package.json and install dependencies

@@ -777,9 +777,16 @@ async function upsertTable(tableName, dataObj) {
     await queryDB(query, values);
 }
 
-function parseArrayIfNeeded(val) {
-    if (typeof val === 'string' && val.startsWith('[') && val.endsWith(']')) {
-        try { return JSON.parse(val); } catch(e) {}
+function parseArrayIfNeeded(key, val) {
+    if (typeof val === 'string') {
+        if (val.startsWith('[') && val.endsWith(']')) {
+            try { return JSON.parse(val); } catch(e) {}
+        }
+        // Explicitly wrap known array fields if they come as raw strings (e.g. "NA" instead of ["NA"])
+        const arrayFields = ['exclude_companies', 'job_role_preferences', 'location_preferences', 'add_ons_info'];
+        if (arrayFields.includes(key)) {
+            return [val];
+        }
     }
     return val;
 }
@@ -796,7 +803,7 @@ function mapClientKeys(client) {
         else if (k === 'clientofficeid') key = 'client_office_id';
         else if (k === 'onboardingdate') key = 'onboarding_date';
         
-        mapped[key] = parseArrayIfNeeded(v);
+        mapped[key] = parseArrayIfNeeded(k, v);
     }
     
     // Satisfy NOT NULL constraints in DB
@@ -813,7 +820,7 @@ function mapProfileKeys(profile) {
         if (k === 'created_at') key = 'crm_created_at';
         else if (k === 'updated_at') key = 'crm_updated_at';
         
-        mapped[key] = parseArrayIfNeeded(v);
+        mapped[key] = parseArrayIfNeeded(k, v);
     }
     
     // Satisfy NOT NULL constraints in DB
