@@ -763,7 +763,7 @@ async function upsertTable(tableName, dataObj) {
     const values = Object.values(dataObj);
     
     const cols = keys.map(k => `"${k}"`).join(', ');
-    const vals = keys.map((_, i) => `${i + 1}`).join(', ');
+    const vals = keys.map((_, i) => '$' + (i + 1)).join(', ');
     
     const updates = keys.filter(k => k !== 'id')
                         .map(k => `"${k}" = EXCLUDED."${k}"`)
