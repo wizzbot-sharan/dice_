@@ -324,7 +324,17 @@ async function runAutomation(job) {
                 const afterLoginElement = nextButton.or(submitButton);
                 await afterLoginElement.waitFor({ state: 'visible', timeout: 30000 });
             } catch (err) {
-                throw new Error("Login Failed: Did not reach application page.");
+                // Failproof Check: Are we literally still trapped on the login screens?
+                const stuckOnEmail = await emailInput.isVisible().catch(() => false);
+                const stuckOnPassword = await page.locator('input[name="password"]').isVisible().catch(() => false);
+                
+                if (stuckOnEmail || stuckOnPassword) {
+                    throw new Error("Login Failed: Invalid credentials or account blocked.");
+                } else {
+                    // Login succeeded, but we got intercepted by a random Dice popup or slow network.
+                    // We throw a standard error so it only fails THIS job, and doesn't drop the whole client.
+                    throw new Error("Login Timeout: Did not reach Next/Submit button after login.");
+                }
             }
             
             await context.storageState({ path: newSessionPath });
