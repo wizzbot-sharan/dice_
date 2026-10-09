@@ -427,6 +427,16 @@ async function runAutomation(job) {
                 VALUES ($1, $2, $3, $4, $5, $6, $7)
             `, [applywizz_id, url, job_name, company, jobStatus, jobReason, JSON.stringify(emailProof)]);
             log(applywizz_id, `Job Finished with status: ${jobStatus}. Saved to PostgreSQL.`);
+            
+            if (jobStatus === 'Completed') {
+                clientSuccessCounts[applywizz_id] = (clientSuccessCounts[applywizz_id] || 0) + 1;
+                await queryDB(`
+                    INSERT INTO dicev2_client_counters (applywizz_id, completed_count) 
+                    VALUES ($1, 1) 
+                    ON CONFLICT (applywizz_id) DO UPDATE 
+                    SET completed_count = dicev2_client_counters.completed_count + 1
+                `, [applywizz_id]).catch(()=>{});
+            }
         } catch(dbSaveErr) {
             log(applywizz_id, `CRITICAL DB ERROR saving job result: ${dbSaveErr.message}`);
         }
@@ -435,18 +445,27 @@ async function runAutomation(job) {
         const jobIndex = jobQueue.findIndex(j => j.id === job.id);
         if (jobIndex !== -1) jobQueue.splice(jobIndex, 1);
 
-        const nextJobIndex = masterBacklog.findIndex(j => j.applywizz_id === applywizz_id);
-        if (nextJobIndex !== -1) {
-            const nextJob = masterBacklog.splice(nextJobIndex, 1)[0];
-            const delayMs = Math.floor(Math.random() * (30 - 20 + 1) + 20) * 60 * 1000;
-            const targetTime = Date.now() + delayMs;
-            
-            nextJob.status = 'COOLDOWN';
-            nextJob.cooldown_until_ms = targetTime;
-            nextJob.cooldown_until = new Date(targetTime).toLocaleTimeString(); 
-            
-            jobQueue.push(nextJob);
-            log(applywizz_id, `Next job pulled. On 20-30 min COOLDOWN until ${nextJob.cooldown_until}`);
+        if ((clientSuccessCounts[applywizz_id] || 0) >= 10) {
+            log(applywizz_id, `Client reached 10 completed jobs! Dropping remaining backlog.`);
+            for (let i = masterBacklog.length - 1; i >= 0; i--) {
+                if (masterBacklog[i].applywizz_id === applywizz_id) {
+                    masterBacklog.splice(i, 1);
+                }
+            }
+        } else {
+            const nextJobIndex = masterBacklog.findIndex(j => j.applywizz_id === applywizz_id);
+            if (nextJobIndex !== -1) {
+                const nextJob = masterBacklog.splice(nextJobIndex, 1)[0];
+                const delayMs = Math.floor(Math.random() * (30 - 20 + 1) + 20) * 60 * 1000;
+                const targetTime = Date.now() + delayMs;
+                
+                nextJob.status = 'COOLDOWN';
+                nextJob.cooldown_until_ms = targetTime;
+                nextJob.cooldown_until = new Date(targetTime).toLocaleTimeString(); 
+                
+                jobQueue.push(nextJob);
+                log(applywizz_id, `Next job pulled. On 20-30 min COOLDOWN until ${nextJob.cooldown_until}`);
+            }
         }
         
         await syncLiveQueue();
@@ -541,16 +560,34 @@ async function initializeDatabase() {
             applywizz_id VARCHAR,
             message TEXT,
             time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        ); 
+        CREATE TABLE IF NOT EXISTS dicev2_client_counters (
+            applywizz_id VARCHAR PRIMARY KEY,
+            completed_count INT DEFAULT 0
         );
     `);
 }
 
-async function startJobRun() {
+let clientSuccessCounts = {};
+
+async function startJobRun(isFresh = true) {
     if (jobQueue.length > 0 || masterBacklog.length > 0) {
         sysLog('WARNING: Previous run is still active. Skipping this Cron trigger.');
         return;
     }
     sysLog('=== STARTING SCHEDULED JOB RUN ===');
+    
+    if (isFresh) {
+        await queryDB('UPDATE dicev2_client_counters SET completed_count = 0').catch(()=>{});
+        clientSuccessCounts = {};
+    } else {
+        try {
+            const dbCounts = await queryDB('SELECT applywizz_id, completed_count FROM dicev2_client_counters');
+            for (const row of dbCounts) {
+                clientSuccessCounts[row.applywizz_id] = parseInt(row.completed_count, 10);
+            }
+        } catch(e){}
+    }
     
     if (!process.env.DATABASE_URL) {
         sysLog('CRITICAL ERROR: DATABASE_URL not set in .env');
@@ -702,15 +739,16 @@ app.get('/api/logs', async (req, res) => {
     }
 });
 
-app.post('/api/trigger', async (req, res) => {
+app.post('/api/trigger', express.json(), async (req, res) => {
     try {
         if (jobQueue.length > 0 || masterBacklog.length > 0) {
             return res.status(400).json({ error: 'A job run is already currently active.' });
         }
-        sysLog('Manual trigger activated via Dashboard.');
+        const isFresh = req.body && req.body.mode === 'fresh';
+        sysLog(`Manual trigger activated via Dashboard. Mode: ${isFresh ? 'FRESH' : 'RESUME'}`);
         
         // Fire and forget so we don't hold the HTTP request open for hours
-        startJobRun().catch(err => sysLog(`MANUAL RUN ERROR: ${err.message}`));
+        startJobRun(isFresh).catch(err => sysLog(`MANUAL RUN ERROR: ${err.message}`));
         
         res.json({ message: 'Automation started successfully.' });
     } catch (e) {
@@ -851,9 +889,9 @@ initializeDatabase().catch(e => console.error("DB Init Error:", e));
 if (process.env.CRON_SCHEDULE) {
     sysLog(`Starting Railway Node-Cron Scheduler: ${process.env.CRON_SCHEDULE}`);
     cron.schedule(process.env.CRON_SCHEDULE, () => {
-        startJobRun().catch(err => sysLog(`CRON ERROR: ${err.message}`));
+        startJobRun(true).catch(err => sysLog(`CRON ERROR: ${err.message}`));
     });
 } else {
     sysLog('No CRON_SCHEDULE provided. Running immediately for testing.');
-    startJobRun().catch(err => sysLog(`RUN ERROR: ${err.message}`));
+    startJobRun(true).catch(err => sysLog(`RUN ERROR: ${err.message}`));
 }

@@ -30,15 +30,27 @@ function App() {
   };
 
   const triggerAutomation = async () => {
-    if (!window.confirm("Are you sure you want to manually trigger the automation?")) return;
+    const action = window.prompt(
+      "Type 'fresh' to start a new run (resets 10-job limits to 0).\nType 'resume' to pick up where a crashed run left off.",
+      "fresh"
+    );
+    
+    if (!action || (action !== 'fresh' && action !== 'resume')) {
+      return; // Canceled or invalid
+    }
+
     setIsTriggering(true);
     try {
-      const res = await fetch('/api/trigger', { method: 'POST' });
+      const res = await fetch('/api/trigger', { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: action })
+      });
       const data = await res.json();
       if (!res.ok) {
         alert(`Error: ${data.error}`);
       } else {
-        alert('Automation started! Watch the Live System Logs.');
+        alert(`Automation started (${action.toUpperCase()})! Watch the Live System Logs.`);
       }
     } catch (e) {
       alert('Failed to trigger automation.');
