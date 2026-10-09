@@ -308,20 +308,24 @@ async function runAutomation(job) {
             const password = process.env.DICE_PASSWORD;
             if (!password) throw new Error("DICE_PASSWORD is not set in .env");
 
-            await emailInput.fill(email_id);
-            await page.locator('[data-testid="sign-in-button"]').click();
-            await randomWait(applywizz_id, page, 3000, 6000); 
-            
-            const passwordInput = page.locator('input[name="password"]').first();
-            await passwordInput.waitFor({ state: 'visible', timeout: 15000 });
-            await passwordInput.fill(password);
-            
-            log(applywizz_id, 'Logging in...');
-            await page.locator('[data-testid="submit-password"]').click();
-            await randomWait(applywizz_id, page, 5000, 10000); 
-            
-            const afterLoginElement = nextButton.or(submitButton);
-            await afterLoginElement.waitFor({ state: 'visible', timeout: 30000 });
+            try {
+                await emailInput.fill(email_id);
+                await page.locator('[data-testid="sign-in-button"]').click();
+                await randomWait(applywizz_id, page, 3000, 6000); 
+                
+                const passwordInput = page.locator('input[name="password"]').first();
+                await passwordInput.waitFor({ state: 'visible', timeout: 15000 });
+                await passwordInput.fill(password);
+                
+                log(applywizz_id, 'Logging in...');
+                await page.locator('[data-testid="submit-password"]').click();
+                await randomWait(applywizz_id, page, 5000, 10000); 
+                
+                const afterLoginElement = nextButton.or(submitButton);
+                await afterLoginElement.waitFor({ state: 'visible', timeout: 30000 });
+            } catch (err) {
+                throw new Error("Login Failed: Did not reach application page.");
+            }
             
             await context.storageState({ path: newSessionPath });
             const savedState = JSON.parse(fs.readFileSync(newSessionPath, 'utf8'));
@@ -420,6 +424,10 @@ async function runAutomation(job) {
         jobStatus = 'Failed';
         jobReason = error.message;
         emailProof = { status: "failed application" };
+        
+        if (error.message.includes('Login Failed')) {
+            job.fatalLoginError = true;
+        }
     } finally {
         await page.close();
         await context.close();
@@ -451,6 +459,13 @@ async function runAutomation(job) {
 
         if ((clientSuccessCounts[applywizz_id] || 0) >= 10) {
             log(applywizz_id, `Client reached 10 completed jobs! Dropping remaining backlog.`);
+            for (let i = masterBacklog.length - 1; i >= 0; i--) {
+                if (masterBacklog[i].applywizz_id === applywizz_id) {
+                    masterBacklog.splice(i, 1);
+                }
+            }
+        } else if (job.fatalLoginError) {
+            log(applywizz_id, `Fatal Login Error detected! Dropping all remaining jobs for this client to save resources.`);
             for (let i = masterBacklog.length - 1; i >= 0; i--) {
                 if (masterBacklog[i].applywizz_id === applywizz_id) {
                     masterBacklog.splice(i, 1);
