@@ -29,6 +29,19 @@ function App() {
     setIsSyncing(false);
   };
 
+  const purgeQueue = async () => {
+    if (!window.confirm("Are you sure you want to PURGE the entire queue?\nThis will instantly delete all pending jobs from memory.")) return;
+    try {
+      const res = await fetch('/api/purge-queue', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) alert(`Error: ${data.error}`);
+      else alert(`Success: ${data.message} (${data.cleared} items cleared)`);
+      fetchStatus();
+    } catch (err) {
+      alert('Network error while purging.');
+    }
+  };
+
   const triggerAutomation = async () => {
     const action = window.prompt(
       "Type 'fresh' to start a new run (resets 10-job limits to 0).\nType 'resume' to pick up where a crashed run left off.",
@@ -138,6 +151,14 @@ function App() {
             >
               <Play className="w-4 h-4" />
               {isTriggering ? 'Starting...' : 'Run Automation'}
+            </button>
+
+            <button 
+              onClick={purgeQueue}
+              className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors"
+            >
+              <span className="font-bold">×</span>
+              Purge Queue
             </button>
 
             <div className="flex items-center gap-2 bg-white p-2 rounded-lg shadow-sm border border-gray-100">

@@ -296,7 +296,10 @@ async function runAutomation(job) {
         await randomWait(applywizz_id, page, 5000, 10000); 
         
         log(applywizz_id, 'Checking if login is required or wizard...');
-        const emailInput = page.locator('input[name="email"]').first();
+        const emailInput = page.locator('input[name="email"]').first()
+            .or(page.locator('input[type="email"]').first())
+            .or(page.locator('input[inputmode="email"]').first());
+            
         const nextButton = page.locator('button').filter({ hasText: /^Next$/i }).first();
         const submitButton = page.locator('button').filter({ hasText: /^Submit$/i }).first();
         
@@ -786,6 +789,19 @@ app.get('/api/stats', async (req, res) => {
         });
     } catch (e) {
         res.status(500).json({ error: e.message });
+    }
+});
+
+// Purge the entire Master Backlog and Job Queue from RAM instantly
+app.post('/api/purge-queue', async (req, res) => {
+    try {
+        const deletedCount = masterBacklog.length + jobQueue.length;
+        masterBacklog.length = 0;
+        jobQueue.length = 0;
+        sysLog(`Queue manually purged via Dashboard API. Cleared ${deletedCount} items from memory.`);
+        res.json({ message: 'Queue Purged Successfully', cleared: deletedCount });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
 });
 
