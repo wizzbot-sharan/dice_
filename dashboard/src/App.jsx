@@ -62,6 +62,8 @@ function App() {
   const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
   const [tempFromDate, setTempFromDate] = useState(todayStr);
   const [tempToDate, setTempToDate] = useState(todayStr);
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date());
+  const [selectingEnd, setSelectingEnd] = useState(false);
 
   // Navigation & View State
   const [activeSection, setActiveSection] = useState('all-stats'); // 'all-stats' | 'errors' | 'logs'
@@ -179,9 +181,24 @@ function App() {
     } catch (e) { }
   };
 
+  const formatFriendly = (isoStr) => {
+    if (!isoStr) return '';
+    try {
+      return format(parseISO(isoStr), 'MMM. do yyyy');
+    } catch {
+      return isoStr;
+    }
+  };
+
   const openDatePicker = () => {
     setTempFromDate(fromDate);
     setTempToDate(toDate);
+    try {
+      setCalendarMonth(parseISO(fromDate));
+    } catch {
+      setCalendarMonth(new Date());
+    }
+    setSelectingEnd(false);
     setIsDatePickerOpen(true);
   };
 
@@ -554,128 +571,272 @@ function App() {
               <button
                 type="button"
                 onClick={openDatePicker}
-                className="flex items-center gap-2 bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-850 border border-zinc-800 hover:border-zinc-700 rounded-lg px-3 py-1.5 text-xs text-zinc-200 transition-all shadow-inner"
+                className="flex items-center gap-2 bg-zinc-950 hover:bg-zinc-900 active:bg-zinc-850 border border-blue-500/40 hover:border-blue-500/80 rounded-xl px-3 py-1.5 text-xs text-zinc-100 transition-all shadow-sm group"
                 title="Filter by Date Range"
               >
-                <Calendar className="w-3.5 h-3.5 text-zinc-400" />
-                <span className="font-mono text-xs">
-                  {fromDate === toDate ? fromDate : `${fromDate} → ${toDate}`}
+                <span className="font-medium text-zinc-200">
+                  {formatFriendly(fromDate)}
                 </span>
-                <ChevronDown className="w-3 h-3 text-zinc-400" />
+                <ArrowRight className="w-3 h-3 text-zinc-400 group-hover:text-blue-400 transition-colors" />
+                <span className="font-medium text-zinc-200">
+                  {formatFriendly(toDate)}
+                </span>
+                <Calendar className="w-3.5 h-3.5 text-blue-400 ml-0.5" />
               </button>
 
-              {isDatePickerOpen && (
-                <>
-                  <div
-                    className="fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px]"
-                    onClick={() => setIsDatePickerOpen(false)}
-                  />
-                  <div className="absolute top-full mt-2 right-0 z-50 w-80 bg-[#000000] border border-zinc-800 rounded-2xl p-4 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100">
-                    <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
-                      <span className="text-xs font-semibold text-white tracking-tight flex items-center gap-1.5">
-                        <Calendar className="w-3.5 h-3.5 text-blue-400" />
-                        <span>Select Date Window</span>
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => setIsDatePickerOpen(false)}
-                        className="p-1 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-zinc-200 transition-colors"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
+              {isDatePickerOpen && (() => {
+                // Calendar calculations
+                const todayObj = new Date();
+                const monthStart = startOfMonth(calendarMonth);
+                const monthEnd = endOfMonth(calendarMonth);
+                const calendarStart = startOfWeek(monthStart, { weekStartsOn: 1 });
+                const calendarEnd = endOfWeek(monthEnd, { weekStartsOn: 1 });
+                const calendarDays = eachDayOfInterval({ start: calendarStart, end: calendarEnd });
 
-                    <div className="py-3 space-y-3">
-                      {/* Presets */}
-                      <div className="flex items-center gap-1.5">
+                // Dynamic suggestions matching screenshot
+                const suggestions = [
+                  {
+                    id: 'today',
+                    title: 'Today',
+                    from: format(todayObj, 'yyyy-MM-dd'),
+                    to: format(todayObj, 'yyyy-MM-dd'),
+                    dateText: format(todayObj, 'd MMM yy')
+                  },
+                  {
+                    id: 'this-week',
+                    title: 'This week',
+                    from: format(startOfWeek(todayObj, { weekStartsOn: 1 }), 'yyyy-MM-dd'),
+                    to: format(endOfWeek(todayObj, { weekStartsOn: 1 }), 'yyyy-MM-dd'),
+                    dateText: `${format(startOfWeek(todayObj, { weekStartsOn: 1 }), 'd MMM yy')} - ${format(endOfWeek(todayObj, { weekStartsOn: 1 }), 'd MMM yy')}`
+                  },
+                  {
+                    id: 'last-7-days',
+                    title: 'Last 7 days',
+                    from: format(subDays(todayObj, 6), 'yyyy-MM-dd'),
+                    to: format(todayObj, 'yyyy-MM-dd'),
+                    dateText: `${format(subDays(todayObj, 6), 'd MMM yy')} - ${format(todayObj, 'd MMM yy')}`
+                  },
+                  {
+                    id: 'this-month',
+                    title: 'This month',
+                    from: format(startOfMonth(todayObj), 'yyyy-MM-dd'),
+                    to: format(endOfMonth(todayObj), 'yyyy-MM-dd'),
+                    dateText: `${format(startOfMonth(todayObj), 'd MMM yy')} - ${format(endOfMonth(todayObj), 'd MMM yy')}`
+                  },
+                  {
+                    id: 'last-31-days',
+                    title: 'Last 31 days',
+                    from: format(subDays(todayObj, 30), 'yyyy-MM-dd'),
+                    to: format(todayObj, 'yyyy-MM-dd'),
+                    dateText: `${format(subDays(todayObj, 30), 'd MMM yy')} - ${format(todayObj, 'd MMM yy')}`
+                  },
+                  {
+                    id: 'this-year',
+                    title: 'This year',
+                    from: format(startOfYear(todayObj), 'yyyy-MM-dd'),
+                    to: format(endOfYear(todayObj), 'yyyy-MM-dd'),
+                    dateText: `${format(startOfYear(todayObj), 'd MMM yy')} - ${format(endOfYear(todayObj), 'd MMM yy')}`
+                  }
+                ];
+
+                const handleDayClick = (day) => {
+                  const dStr = format(day, 'yyyy-MM-dd');
+                  if (!selectingEnd) {
+                    setTempFromDate(dStr);
+                    setTempToDate(dStr);
+                    setSelectingEnd(true);
+                  } else {
+                    if (dStr < tempFromDate) {
+                      setTempToDate(tempFromDate);
+                      setTempFromDate(dStr);
+                    } else {
+                      setTempToDate(dStr);
+                    }
+                    setSelectingEnd(false);
+                  }
+                };
+
+                const selectSuggestion = (s) => {
+                  setTempFromDate(s.from);
+                  setTempToDate(s.to);
+                  setSelectingEnd(false);
+                  try {
+                    setCalendarMonth(parseISO(s.from));
+                  } catch {}
+                };
+
+                return (
+                  <>
+                    {/* Backdrop */}
+                    <div
+                      className="fixed inset-0 z-40 bg-black/60 backdrop-blur-[2px]"
+                      onClick={() => setIsDatePickerOpen(false)}
+                    />
+
+                    {/* Popover Card matching screenshot model */}
+                    <div className="absolute top-full mt-2 right-0 z-50 w-[590px] max-w-[95vw] bg-[#000000] border border-zinc-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-100">
+                      
+                      {/* Top Body (Split: Left Calendar & Inputs, Right Suggestions) */}
+                      <div className="flex flex-col sm:flex-row">
+                        
+                        {/* LEFT PANE: Inputs & Calendar */}
+                        <div className="p-4 sm:w-[340px] flex flex-col">
+                          
+                          {/* From & To Preview Inputs */}
+                          <div className="grid grid-cols-2 gap-2.5 mb-4">
+                            <div>
+                              <span className="block text-[11px] font-medium text-zinc-400 mb-1">From</span>
+                              <div className="flex items-center justify-between px-2.5 py-1.5 bg-zinc-900 border border-zinc-700/80 rounded-xl text-xs text-zinc-100 shadow-sm">
+                                <span className="truncate">{formatFriendly(tempFromDate) || '-'}</span>
+                                <Calendar className="w-3.5 h-3.5 text-blue-400 shrink-0 ml-1" />
+                              </div>
+                            </div>
+                            <div>
+                              <span className="block text-[11px] font-medium text-zinc-400 mb-1">To</span>
+                              <div className="flex items-center justify-between px-2.5 py-1.5 bg-zinc-900 border border-zinc-700/80 rounded-xl text-xs text-zinc-100 shadow-sm">
+                                <span className="truncate">{formatFriendly(tempToDate) || '-'}</span>
+                                <Calendar className="w-3.5 h-3.5 text-blue-400 shrink-0 ml-1" />
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Month Navigation */}
+                          <div className="flex items-center justify-between mb-3 px-1">
+                            <h3 className="text-sm font-bold text-white tracking-tight">
+                              {format(calendarMonth, 'MMMM yyyy')}
+                            </h3>
+                            <div className="flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => setCalendarMonth(prev => subMonths(prev, 1))}
+                                className="p-1.5 hover:bg-zinc-800 active:bg-zinc-700 rounded-lg text-zinc-400 hover:text-zinc-100 border border-zinc-800 transition-colors"
+                                title="Previous Month"
+                              >
+                                <ChevronLeft className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setCalendarMonth(prev => addMonths(prev, 1))}
+                                className="p-1.5 hover:bg-zinc-800 active:bg-zinc-700 rounded-lg text-zinc-400 hover:text-zinc-100 border border-zinc-800 transition-colors"
+                                title="Next Month"
+                              >
+                                <ChevronRight className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Day of Week Headers */}
+                          <div className="grid grid-cols-7 gap-1 text-center mb-1">
+                            {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(name => (
+                              <div key={name} className="text-[11px] font-semibold text-zinc-400 py-1">
+                                {name}
+                              </div>
+                            ))}
+                          </div>
+
+                          {/* Interactive Calendar Grid with continuous Range Ribbon */}
+                          <div className="grid grid-cols-7 gap-y-1">
+                            {calendarDays.map((day) => {
+                              const dStr = format(day, 'yyyy-MM-dd');
+                              const inCurrentMonth = isSameMonth(day, calendarMonth);
+                              const isToday = isSameDay(day, todayObj);
+                              const isStart = tempFromDate && dStr === tempFromDate;
+                              const isEnd = tempToDate && dStr === tempToDate;
+                              const hasRange = tempFromDate && tempToDate && tempFromDate < tempToDate;
+                              const isBetween = hasRange && dStr > tempFromDate && dStr < tempToDate;
+
+                              return (
+                                <div
+                                  key={dStr}
+                                  onClick={() => handleDayClick(day)}
+                                  className="h-8 w-full flex items-center justify-center relative cursor-pointer group"
+                                >
+                                  {/* Range Highlight Ribbon */}
+                                  {isBetween && (
+                                    <div className="absolute inset-y-0.5 inset-x-0 bg-blue-600/20" />
+                                  )}
+                                  {isStart && hasRange && (
+                                    <div className="absolute inset-y-0.5 left-1/2 right-0 bg-blue-600/20" />
+                                  )}
+                                  {isEnd && hasRange && (
+                                    <div className="absolute inset-y-0.5 left-0 right-1/2 bg-blue-600/20" />
+                                  )}
+
+                                  {/* Day Circle / Text */}
+                                  <div className={`relative z-10 w-7 h-7 rounded-full flex flex-col items-center justify-center text-xs transition-all ${
+                                    isStart || isEnd
+                                      ? 'bg-blue-600 text-white font-bold shadow-md shadow-blue-600/40'
+                                      : isBetween
+                                      ? 'text-blue-200 font-medium'
+                                      : inCurrentMonth
+                                      ? 'text-zinc-200 group-hover:bg-zinc-800'
+                                      : 'text-zinc-600 group-hover:bg-zinc-900'
+                                  }`}>
+                                    <span>{format(day, 'd')}</span>
+                                    {isToday && !isStart && !isEnd && (
+                                      <div className="w-1 h-1 rounded-full bg-rose-500 absolute bottom-0.5" />
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                        </div>
+
+                        {/* RIGHT PANE: Suggestions matching screenshot */}
+                        <div className="p-4 sm:w-[250px] border-t sm:border-t-0 sm:border-l border-zinc-800 flex flex-col justify-between">
+                          <div>
+                            <h4 className="text-xs font-bold text-blue-400 tracking-wide mb-3">Suggestions</h4>
+                            <div className="space-y-1.5">
+                              {suggestions.map((s) => {
+                                const active = tempFromDate === s.from && tempToDate === s.to;
+                                return (
+                                  <button
+                                    key={s.id}
+                                    type="button"
+                                    onClick={() => selectSuggestion(s)}
+                                    className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-left text-xs transition-all ${
+                                      active
+                                        ? 'bg-blue-600/20 border border-blue-500/40 text-blue-200 shadow-sm'
+                                        : 'text-zinc-300 hover:text-white hover:bg-zinc-900 border border-transparent'
+                                    }`}
+                                  >
+                                    <span className="font-semibold text-zinc-200">{s.title}</span>
+                                    <span className={`text-[10px] font-mono shrink-0 ml-2 ${active ? 'text-blue-300' : 'text-zinc-500'}`}>
+                                      {s.dateText}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+
+                      </div>
+
+                      {/* FOOTER BAR: Cancel & Apply */}
+                      <div className="border-t border-zinc-800 px-4 py-3 flex items-center justify-between bg-zinc-950/60">
                         <button
                           type="button"
-                          onClick={() => { setTempFromDate(todayStr); setTempToDate(todayStr); }}
-                          className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-[11px] font-medium transition-colors"
+                          onClick={() => setIsDatePickerOpen(false)}
+                          className="text-xs font-medium text-zinc-400 hover:text-zinc-100 underline-offset-4 hover:underline transition-colors px-1"
                         >
-                          Today
+                          Cancel
                         </button>
                         <button
                           type="button"
-                          onClick={() => {
-                            const y = new Date();
-                            y.setDate(y.getDate() - 1);
-                            const ys = format(y, 'yyyy-MM-dd');
-                            setTempFromDate(ys);
-                            setTempToDate(ys);
-                          }}
-                          className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-[11px] font-medium transition-colors"
+                          onClick={handleApplyDates}
+                          className="px-6 py-2 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white font-semibold rounded-xl text-xs shadow-lg shadow-blue-600/35 transition-all"
                         >
-                          Yesterday
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const d7 = new Date();
-                            d7.setDate(d7.getDate() - 6);
-                            setTempFromDate(format(d7, 'yyyy-MM-dd'));
-                            setTempToDate(todayStr);
-                          }}
-                          className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-[11px] font-medium transition-colors"
-                        >
-                          Past 7 Days
+                          Apply
                         </button>
                       </div>
 
-                      {/* Side-by-side From and To with strict cross-validation */}
-                      <div className="grid grid-cols-2 gap-2.5">
-                        <div>
-                          <label className="block text-[10px] uppercase font-semibold text-zinc-400 mb-1">From Date</label>
-                          <input
-                            type="date"
-                            value={tempFromDate}
-                            max={tempToDate}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              setTempFromDate(val);
-                              if (val > tempToDate) setTempToDate(val);
-                            }}
-                            className="w-full px-2.5 py-1.5 bg-zinc-950/80 border border-zinc-700 rounded-xl text-xs text-zinc-100 outline-none focus:border-blue-500 [color-scheme:dark]"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[10px] uppercase font-semibold text-zinc-400 mb-1">To Date</label>
-                          <input
-                            type="date"
-                            value={tempToDate}
-                            min={tempFromDate}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              setTempToDate(val);
-                              if (val < tempFromDate) setTempFromDate(val);
-                            }}
-                            className="w-full px-2.5 py-1.5 bg-zinc-950/80 border border-zinc-700 rounded-xl text-xs text-zinc-100 outline-none focus:border-blue-500 [color-scheme:dark]"
-                          />
-                        </div>
-                      </div>
                     </div>
-
-                    {/* Actions */}
-                    <div className="pt-3 border-t border-zinc-800 flex items-center justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setIsDatePickerOpen(false)}
-                        className="px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleApplyDates}
-                        className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-blue-600/30 transition-all"
-                      >
-                        Submit
-                      </button>
-                    </div>
-                  </div>
-                </>
-              )}
+                  </>
+                );
+              })()}
             </div>
           </div>
 
