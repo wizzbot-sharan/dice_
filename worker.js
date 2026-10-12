@@ -824,38 +824,111 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
+app.post('/api/auth/login', async (req, res) => {
+    try {
+        const { username, password } = req.body || {};
+        const expectedUser = process.env.DASHBOARD_USERNAME || 'admin';
+        const expectedPass = process.env.DASHBOARD_PASSWORD || 'applywizz2026';
+
+        if (username === expectedUser && password === expectedPass) {
+            return res.json({ success: true, token: 'applywizz-session-token' });
+        }
+        return res.status(401).json({ error: 'Invalid username or password' });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 app.get('/api/stats', async (req, res) => {
     try {
         const { from, to } = req.query;
         let timeFilter = "";
         const params = [];
         if (from && to) {
-            // we assume from/to are valid timestamp strings
             timeFilter = "WHERE time >= $1 AND time <= $2";
             params.push(from, to);
         }
         
+        // 1. Distinct active clients directly from clients_additional_info
+        let activeClientsCount = 0;
+        try {
+            const activeRes = await queryDB("SELECT COUNT(DISTINCT applywizz_id) as count FROM clients_additional_info WHERE applywizz_id IS NOT NULL");
+            activeClientsCount = parseInt(activeRes[0]?.count || 0, 10);
+        } catch(e) {
+            console.error("Error fetching active clients count:", e.message);
+        }
+
+        // 2. Client list joined with counts in the date filter
         const clientsRes = await queryDB(`
-            SELECT applywizz_id, 
-                   SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) as completed_count,
-                   SUM(CASE WHEN status = 'Failed' THEN 1 ELSE 0 END) as failed_count
-            FROM dicev2_applied_jobs
-            ${timeFilter}
-            GROUP BY applywizz_id
+            WITH client_jobs AS (
+                SELECT 
+                    applywizz_id, 
+                    SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) as completed_count,
+                    SUM(CASE WHEN status = 'Completed' AND (reason ILIKE '%zoho%' OR (reason IS NOT NULL AND reason != '')) THEN 1 ELSE 0 END) as zoho_skipped_count,
+                    SUM(CASE WHEN status = 'Completed' AND (reason IS NULL OR reason = '') THEN 1 ELSE 0 END) as clean_completed_count,
+                    SUM(CASE WHEN status = 'Failed' THEN 1 ELSE 0 END) as failed_count
+                FROM dicev2_applied_jobs
+                ${timeFilter}
+                GROUP BY applywizz_id
+            )
+            SELECT 
+                COALESCE(c.applywizz_id, j.applywizz_id) as applywizz_id,
+                COALESCE(c.company_email, '') as company_email,
+                COALESCE(j.completed_count, 0) as completed_count,
+                COALESCE(j.zoho_skipped_count, 0) as zoho_skipped_count,
+                COALESCE(j.clean_completed_count, 0) as clean_completed_count,
+                COALESCE(j.failed_count, 0) as failed_count
+            FROM clients_additional_info c
+            FULL OUTER JOIN client_jobs j ON c.applywizz_id = j.applywizz_id
+            WHERE COALESCE(c.applywizz_id, j.applywizz_id) IS NOT NULL
+            ORDER BY completed_count DESC, failed_count DESC, applywizz_id ASC
         `, params);
 
+        // 3. Overall Totals
         const totalRes = await queryDB(`
             SELECT 
-                   SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) as total_completed,
-                   SUM(CASE WHEN status = 'Failed' THEN 1 ELSE 0 END) as total_failed
+                COALESCE(SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END), 0) as total_completed,
+                COALESCE(SUM(CASE WHEN status = 'Completed' AND (reason ILIKE '%zoho%' OR (reason IS NOT NULL AND reason != '')) THEN 1 ELSE 0 END), 0) as completed_zoho_skipped,
+                COALESCE(SUM(CASE WHEN status = 'Completed' AND (reason IS NULL OR reason = '') THEN 1 ELSE 0 END), 0) as properly_completed,
+                COALESCE(SUM(CASE WHEN status = 'Failed' THEN 1 ELSE 0 END), 0) as total_failed
             FROM dicev2_applied_jobs
             ${timeFilter}
         `, params);
 
+        const totalsRow = totalRes[0] || {};
+
         res.json({
-            totals: totalRes[0] || { total_completed: 0, total_failed: 0 },
+            totals: {
+                active_clients: activeClientsCount,
+                total_completed: parseInt(totalsRow.total_completed || 0, 10),
+                completed_zoho_skipped: parseInt(totalsRow.completed_zoho_skipped || 0, 10),
+                properly_completed: parseInt(totalsRow.properly_completed || 0, 10),
+                total_failed: parseInt(totalsRow.total_failed || 0, 10)
+            },
             clients: clientsRes
         });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get('/api/errors', async (req, res) => {
+    try {
+        const { from, to } = req.query;
+        let timeFilter = "WHERE status = 'Failed'";
+        const params = [];
+        if (from && to) {
+            timeFilter += " AND time >= $1 AND time <= $2";
+            params.push(from, to);
+        }
+        const errors = await queryDB(`
+            SELECT applywizz_id, name, company, url, reason, time 
+            FROM dicev2_applied_jobs
+            ${timeFilter}
+            ORDER BY time DESC
+            LIMIT 500
+        `, params);
+        res.json(errors);
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
