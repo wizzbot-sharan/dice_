@@ -342,8 +342,8 @@ function App() {
                 type="button"
                 onClick={() => { setActiveSection('all-stats'); setIsMenuDrawerOpen(false); }}
                 className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all ${activeSection === 'all-stats'
-                    ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
-                    : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
+                  ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+                  : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
                   }`}
               >
                 <div className="flex items-center gap-2.5">
@@ -361,8 +361,8 @@ function App() {
                 type="button"
                 onClick={() => { setActiveSection('errors'); setIsMenuDrawerOpen(false); }}
                 className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all ${activeSection === 'errors'
-                    ? 'bg-rose-600 text-white shadow-md shadow-rose-600/30'
-                    : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
+                  ? 'bg-rose-600 text-white shadow-md shadow-rose-600/30'
+                  : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
                   }`}
               >
                 <div className="flex items-center gap-2.5">
@@ -380,8 +380,8 @@ function App() {
                 type="button"
                 onClick={() => { setActiveSection('logs'); setIsMenuDrawerOpen(false); }}
                 className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all ${activeSection === 'logs'
-                    ? 'bg-zinc-800 text-white border border-zinc-700'
-                    : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
+                  ? 'bg-zinc-800 text-white border border-zinc-700'
+                  : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
                   }`}
               >
                 <div className="flex items-center gap-2.5">
@@ -482,7 +482,7 @@ function App() {
 
   // --- RENDER AUTHENTICATED DASHBOARD ---
   return (
-    <div className="min-h-screen bg-[#222222] text-zinc-100 font-sans selection:bg-blue-600 selection:text-white flex flex-col">
+    <div className="min-h-screen bg-[#111111] text-zinc-100 font-sans selection:bg-blue-600 selection:text-white flex flex-col">
 
       {/* 1. APPLE-STYLE TOP NAV BAR */}
       <header className="sticky top-0 z-40 bg-[#000000] border-b border-zinc-900/80 px-4 lg:px-8 py-2.5 transition-all shadow-md">
@@ -811,16 +811,16 @@ function App() {
                           </td>
                           <td className="px-6 py-3.5 text-center">
                             <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${(client.completed_count || 0) > 0
-                                ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                                : 'bg-zinc-800/60 text-zinc-500'
+                              ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                              : 'bg-zinc-800/60 text-zinc-500'
                               }`}>
                               {client.completed_count || 0}
                             </span>
                           </td>
                           <td className="px-6 py-3.5 text-center">
                             <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${(client.failed_count || 0) > 0
-                                ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
-                                : 'bg-zinc-800/60 text-zinc-500'
+                              ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                              : 'bg-zinc-800/60 text-zinc-500'
                               }`}>
                               {client.failed_count || 0}
                             </span>
@@ -963,8 +963,8 @@ function App() {
                   <button
                     onClick={() => setAutoScrollLogs(!autoScrollLogs)}
                     className={`px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${autoScrollLogs
-                        ? 'bg-blue-600/20 text-blue-400 border-blue-500/30'
-                        : 'bg-zinc-800 text-zinc-400 border-zinc-700'
+                      ? 'bg-blue-600/20 text-blue-400 border-blue-500/30'
+                      : 'bg-zinc-800 text-zinc-400 border-zinc-700'
                       }`}
                   >
                     {autoScrollLogs ? 'Auto-scroll ON' : 'Auto-scroll OFF'}
@@ -1060,8 +1060,8 @@ function App() {
                 <button
                   onClick={() => setClientFilter('all')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${clientFilter === 'all'
-                      ? 'bg-zinc-100 text-zinc-950'
-                      : 'bg-zinc-800/70 text-zinc-400 hover:text-zinc-200'
+                    ? 'bg-zinc-100 text-zinc-950'
+                    : 'bg-zinc-800/70 text-zinc-400 hover:text-zinc-200'
                     }`}
                 >
                   All ({clientJobs.length})
@@ -1069,8 +1069,8 @@ function App() {
                 <button
                   onClick={() => setClientFilter('completed')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${clientFilter === 'completed'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-zinc-800/70 text-zinc-400 hover:text-zinc-200'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-zinc-800/70 text-zinc-400 hover:text-zinc-200'
                     }`}
                 >
                   Completed ({clientCompleted})
@@ -1078,8 +1078,8 @@ function App() {
                 <button
                   onClick={() => setClientFilter('zoho_skipped')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${clientFilter === 'zoho_skipped'
-                      ? 'bg-amber-600 text-white'
-                      : 'bg-zinc-800/70 text-zinc-400 hover:text-zinc-200'
+                    ? 'bg-amber-600 text-white'
+                    : 'bg-zinc-800/70 text-zinc-400 hover:text-zinc-200'
                     }`}
                 >
                   Zoho Skipped ({clientZohoSkipped})
@@ -1087,8 +1087,8 @@ function App() {
                 <button
                   onClick={() => setClientFilter('clean')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${clientFilter === 'clean'
-                      ? 'bg-emerald-600 text-white'
-                      : 'bg-zinc-800/70 text-zinc-400 hover:text-zinc-200'
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-zinc-800/70 text-zinc-400 hover:text-zinc-200'
                     }`}
                 >
                   Clean Completed ({clientCleanCompleted})
@@ -1096,8 +1096,8 @@ function App() {
                 <button
                   onClick={() => setClientFilter('failed')}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${clientFilter === 'failed'
-                      ? 'bg-rose-600 text-white'
-                      : 'bg-zinc-800/70 text-zinc-400 hover:text-zinc-200'
+                    ? 'bg-rose-600 text-white'
+                    : 'bg-zinc-800/70 text-zinc-400 hover:text-zinc-200'
                     }`}
                 >
                   Failed ({clientFailed})
