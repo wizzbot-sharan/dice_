@@ -1,7 +1,7 @@
 require('dotenv').config();
 const { chromium } = require('playwright');
 const { Client } = require('pg');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const cron = require('node-cron');
 const fs = require('fs');
 const path = require('path');
@@ -309,6 +309,7 @@ async function runAutomation(job) {
     let jobStatus = 'Failed';
     let jobReason = 'Unknown error';
     let emailProof = { status: "failed application" };
+    let screenshotUrl = null;
     
     let contextOptions = {};
     const newSessionPath = path.join(sessionsDir, `${applywizz_id}_session.json`);
@@ -470,7 +471,8 @@ async function runAutomation(job) {
                 Body: screenshotBuffer,
                 ContentType: 'image/png'
             }));
-            log(applywizz_id, `Screenshot securely uploaded to S3: ${objectKey}`);
+            screenshotUrl = `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${encodeURI(objectKey)}`;
+            log(applywizz_id, `Screenshot securely uploaded to S3: ${screenshotUrl}`);
         } else {
             log(applywizz_id, `WARNING: S3 missing config. Skipping upload.`);
         }
@@ -503,9 +505,9 @@ async function runAutomation(job) {
         // Write exactly to Azure DB specifications
         try {
             await queryDB(`
-                INSERT INTO dicev2_applied_jobs (applywizz_id, url, name, company, status, reason, email_proof)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-            `, [applywizz_id, url, job_name, company, jobStatus, jobReason, JSON.stringify(emailProof)]);
+                INSERT INTO dicev2_applied_jobs (applywizz_id, url, name, company, status, reason, email_proof, screenshot)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            `, [applywizz_id, url, job_name, company, jobStatus, jobReason, JSON.stringify(emailProof), screenshotUrl]);
             log(applywizz_id, `Job Finished with status: ${jobStatus}. Saved to PostgreSQL.`);
             
             if (jobStatus === 'Completed') {
@@ -704,8 +706,10 @@ async function initializeDatabase() {
             status VARCHAR,
             reason VARCHAR,
             time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            email_proof JSONB
+            email_proof JSONB,
+            screenshot TEXT
         );
+        ALTER TABLE dicev2_applied_jobs ADD COLUMN IF NOT EXISTS screenshot TEXT;
         CREATE TABLE IF NOT EXISTS dicev2_logs (
             id SERIAL PRIMARY KEY,
             applywizz_id VARCHAR,
@@ -1020,6 +1024,39 @@ app.get('/api/jobs/:applywizz_id', async (req, res) => {
         res.json(jobs);
     } catch (e) {
         res.status(500).json({ error: e.message });
+    }
+});
+
+// Secure endpoint to stream S3 screenshot
+app.get('/api/screenshot/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const jobs = await queryDB('SELECT screenshot, applywizz_id, company, name FROM dicev2_applied_jobs WHERE id = $1', [id]);
+        if (jobs.length === 0 || !jobs[0].screenshot) {
+            return res.status(404).send('Screenshot not found');
+        }
+
+        const s3Prefix = `https://${process.env.AWS_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/`;
+        let key = jobs[0].screenshot;
+        if (key.startsWith(s3Prefix)) {
+            key = decodeURI(key.slice(s3Prefix.length));
+        }
+
+        if (!s3 || !process.env.AWS_BUCKET_NAME) {
+            return res.status(500).send('S3 client not configured');
+        }
+
+        const s3Res = await s3.send(new GetObjectCommand({
+            Bucket: process.env.AWS_BUCKET_NAME,
+            Key: key
+        }));
+
+        res.setHeader('Content-Type', s3Res.ContentType || 'image/png');
+        if (s3Res.ContentLength) res.setHeader('Content-Length', s3Res.ContentLength);
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        s3Res.Body.pipe(res);
+    } catch (err) {
+        res.status(500).send(`Error loading screenshot: ${err.message}`);
     }
 });
 

@@ -41,7 +41,8 @@ import {
   Layers,
   Sparkles,
   ArrowRight,
-  Trash2
+  Trash2,
+  Eye
 } from 'lucide-react';
 
 function App() {
@@ -98,6 +99,7 @@ function App() {
   const [clientJobs, setClientJobs] = useState([]);
   const [loadingJobs, setLoadingJobs] = useState(false);
   const [clientFilter, setClientFilter] = useState('all'); // 'all' | 'completed' | 'zoho_skipped' | 'clean' | 'failed'
+  const [previewScreenshot, setPreviewScreenshot] = useState(null); // { id, name, company, time, url }
 
   // Per-Client Purge State
   const [clientToPurge, setClientToPurge] = useState(null);
@@ -1086,13 +1088,14 @@ function App() {
                         <th className="px-4 py-3">Company</th>
                         <th className="px-4 py-3">Job Title</th>
                         <th className="px-4 py-3">Status</th>
+                        <th className="px-4 py-3 text-center">Screenshot</th>
                         <th className="px-4 py-3">Reason</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-zinc-800/60 bg-[#000000]">
                       {loadingJobs ? (
                         <tr>
-                          <td colSpan="5" className="px-4 py-10 text-center text-zinc-500">
+                          <td colSpan="6" className="px-4 py-10 text-center text-zinc-500">
                             <div className="inline-flex items-center gap-2">
                               <RefreshCw className="w-4 h-4 animate-spin text-blue-500" />
                               <span>Loading client history...</span>
@@ -1101,7 +1104,7 @@ function App() {
                         </tr>
                       ) : filteredClientJobs.length === 0 ? (
                         <tr>
-                          <td colSpan="5" className="px-4 py-10 text-center text-zinc-500">
+                          <td colSpan="6" className="px-4 py-10 text-center text-zinc-500">
                             No jobs found matching this status filter.
                           </td>
                         </tr>
@@ -1132,6 +1135,27 @@ function App() {
                                 <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-rose-500/10 border border-rose-500/20 text-rose-400">
                                   Failed
                                 </span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3 text-center">
+                              {job.screenshot ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setPreviewScreenshot({
+                                    id: job.id,
+                                    name: job.name,
+                                    company: job.company,
+                                    time: job.time,
+                                    url: `/api/screenshot/${job.id}`
+                                  })}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-blue-400 hover:text-blue-300 rounded-lg text-[11px] font-medium transition-all border border-zinc-700 hover:border-blue-500/40"
+                                  title="View screenshot proof"
+                                >
+                                  <Eye className="w-3.5 h-3.5" />
+                                  <span>View</span>
+                                </button>
+                              ) : (
+                                <span className="text-zinc-600">-</span>
                               )}
                             </td>
                             <td className="px-4 py-3 text-zinc-400 font-mono text-[11px] max-w-xs truncate" title={job.reason}>
@@ -1492,6 +1516,66 @@ function App() {
           </div>
         );
       })()}
+
+      {/* In-App Screenshot Preview Modal */}
+      {previewScreenshot && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-150">
+          <div
+            className="fixed inset-0"
+            onClick={() => setPreviewScreenshot(null)}
+          />
+
+          <div className="relative z-10 w-full max-w-4xl max-h-[90vh] bg-[#000000] border border-zinc-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-150">
+            {/* Modal Header */}
+            <div className="px-5 py-3.5 border-b border-zinc-800 flex items-center justify-between bg-zinc-950/80">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center justify-center shrink-0">
+                  <Eye className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <h3 className="text-sm font-bold text-white tracking-tight truncate max-w-md">
+                    {previewScreenshot.name || 'Application Screenshot Proof'}
+                  </h3>
+                  <p className="text-xs text-zinc-400 truncate">
+                    {previewScreenshot.company} {previewScreenshot.time ? `• ${format(new Date(previewScreenshot.time), 'MMM d, yyyy HH:mm')}` : ''}
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <a
+                  href={previewScreenshot.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 hover:text-white rounded-xl text-xs font-semibold transition-all border border-zinc-700"
+                  title="Open full image in a new tab"
+                >
+                  <span>Open in New Tab</span>
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+                <button
+                  type="button"
+                  onClick={() => setPreviewScreenshot(null)}
+                  className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-zinc-100 transition-colors"
+                  title="Close preview"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Screenshot Image Body */}
+            <div className="p-4 overflow-y-auto max-h-[75vh] flex items-center justify-center bg-zinc-950/40">
+              <img
+                src={previewScreenshot.url}
+                alt="Dice Application Proof"
+                className="w-full max-w-full rounded-xl border border-zinc-800/80 shadow-lg object-contain bg-zinc-900"
+                loading="lazy"
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );
