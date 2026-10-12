@@ -42,7 +42,9 @@ import {
   Sparkles,
   ArrowRight,
   Trash2,
-  Eye
+  Eye,
+  ZoomIn,
+  ZoomOut
 } from 'lucide-react';
 
 function App() {
@@ -100,6 +102,21 @@ function App() {
   const [loadingJobs, setLoadingJobs] = useState(false);
   const [clientFilter, setClientFilter] = useState('all'); // 'all' | 'completed' | 'zoho_skipped' | 'clean' | 'failed'
   const [previewScreenshot, setPreviewScreenshot] = useState(null); // { id, name, company, time, url }
+  const [screenshotZoomed, setScreenshotZoomed] = useState(false);
+
+  useEffect(() => {
+    if (!previewScreenshot) {
+      setScreenshotZoomed(false);
+      return;
+    }
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setPreviewScreenshot(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [previewScreenshot]);
 
   // Per-Client Purge State
   const [clientToPurge, setClientToPurge] = useState(null);
@@ -1525,9 +1542,9 @@ function App() {
             onClick={() => setPreviewScreenshot(null)}
           />
 
-          <div className="relative z-10 w-full max-w-4xl max-h-[90vh] bg-[#000000] border border-zinc-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-150">
+          <div className="relative z-10 w-full max-w-5xl h-[90vh] max-h-[90vh] bg-[#000000] border border-zinc-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-150">
             {/* Modal Header */}
-            <div className="px-5 py-3.5 border-b border-zinc-800 flex items-center justify-between bg-zinc-950/80">
+            <div className="px-5 py-3.5 border-b border-zinc-800 flex items-center justify-between bg-zinc-950/80 shrink-0">
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center justify-center shrink-0">
                   <Eye className="w-4 h-4" />
@@ -1543,6 +1560,24 @@ function App() {
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setScreenshotZoomed(prev => !prev)}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 hover:text-white rounded-xl text-xs font-semibold transition-all border border-zinc-700"
+                  title={screenshotZoomed ? "Fit image to window width" : "View at 100% native resolution"}
+                >
+                  {screenshotZoomed ? (
+                    <>
+                      <ZoomOut className="w-3.5 h-3.5 text-blue-400" />
+                      <span>Fit Width</span>
+                    </>
+                  ) : (
+                    <>
+                      <ZoomIn className="w-3.5 h-3.5 text-blue-400" />
+                      <span>Actual Size</span>
+                    </>
+                  )}
+                </button>
                 <a
                   href={previewScreenshot.url}
                   target="_blank"
@@ -1557,7 +1592,7 @@ function App() {
                   type="button"
                   onClick={() => setPreviewScreenshot(null)}
                   className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-zinc-100 transition-colors"
-                  title="Close preview"
+                  title="Close preview (Esc)"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -1565,11 +1600,17 @@ function App() {
             </div>
 
             {/* Screenshot Image Body */}
-            <div className="p-4 overflow-y-auto max-h-[75vh] flex items-center justify-center bg-zinc-950/40">
+            <div className="flex-1 min-h-0 overflow-y-auto overflow-x-auto p-4 sm:p-6 bg-zinc-950/60 flex justify-center items-start">
               <img
                 src={previewScreenshot.url}
                 alt="Dice Application Proof"
-                className="w-full max-w-full rounded-xl border border-zinc-800/80 shadow-lg object-contain bg-zinc-900"
+                onClick={() => setScreenshotZoomed(prev => !prev)}
+                className={`rounded-xl border border-zinc-800 shadow-2xl transition-all duration-150 ${
+                  screenshotZoomed
+                    ? 'max-w-none w-auto cursor-zoom-out'
+                    : 'max-w-full h-auto object-contain cursor-zoom-in'
+                }`}
+                title={screenshotZoomed ? "Click to fit width" : "Click to view full size"}
                 loading="lazy"
               />
             </div>
