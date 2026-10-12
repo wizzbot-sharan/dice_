@@ -324,7 +324,7 @@ function App() {
           />
 
           {/* Anchored Dropdown Popover */}
-          <div className="absolute top-full left-0 mt-2 z-50 w-64 bg-zinc-900 border border-zinc-700 rounded-2xl p-2.5 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100">
+          <div className="absolute top-full left-0 mt-2 z-50 w-64 bg-[#000000] border border-zinc-800 rounded-2xl p-2.5 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100">
             <div className="flex items-center justify-between px-2.5 py-1.5 mb-1.5 border-b border-zinc-800">
               <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider">Navigation</span>
               <button
@@ -487,10 +487,10 @@ function App() {
 
   // --- RENDER AUTHENTICATED DASHBOARD ---
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans selection:bg-blue-600 selection:text-white flex flex-col">
+    <div className="min-h-screen bg-[#616161] text-zinc-100 font-sans selection:bg-blue-600 selection:text-white flex flex-col">
       
       {/* 1. APPLE-STYLE TOP NAV BAR */}
-      <header className="sticky top-0 z-40 backdrop-blur-xl bg-zinc-950/80 border-b border-zinc-800/80 px-4 lg:px-8 py-2.5 transition-all">
+      <header className="sticky top-0 z-40 bg-[#000000] border-b border-zinc-900/80 px-4 lg:px-8 py-2.5 transition-all shadow-md">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
           
           {/* Left: Brand Logo Only */}
@@ -558,7 +558,7 @@ function App() {
                     className="fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px]"
                     onClick={() => setIsDatePickerOpen(false)}
                   />
-                  <div className="absolute top-full mt-2 right-0 z-50 w-80 bg-zinc-900 border border-zinc-700 rounded-2xl p-4 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100">
+                  <div className="absolute top-full mt-2 right-0 z-50 w-80 bg-[#000000] border border-zinc-800 rounded-2xl p-4 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100">
                     <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
                       <span className="text-xs font-semibold text-white tracking-tight flex items-center gap-1.5">
                         <Calendar className="w-3.5 h-3.5 text-blue-400" />
@@ -688,7 +688,7 @@ function App() {
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3 lg:gap-4">
           
           {/* Card 1: Active Clients */}
-          <div className="bg-zinc-900/70 border border-zinc-800/80 rounded-2xl p-4 flex items-center justify-between shadow-sm relative overflow-hidden group hover:border-blue-500/40 transition-all">
+          <div className="bg-[#000000] border border-zinc-800 rounded-2xl p-4 flex items-center justify-between shadow-xl relative overflow-hidden group hover:border-blue-500/40 transition-all">
             <div>
               <p className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">Active Clients</p>
               <h3 className="text-2xl font-bold tracking-tight text-white mt-1">
@@ -702,7 +702,7 @@ function App() {
           </div>
 
           {/* Card 2: Total Completed Jobs */}
-          <div className="bg-zinc-900/70 border border-zinc-800/80 rounded-2xl p-4 flex items-center justify-between shadow-sm relative overflow-hidden group hover:border-indigo-500/40 transition-all">
+          <div className="bg-[#000000] border border-zinc-800 rounded-2xl p-4 flex items-center justify-between shadow-xl relative overflow-hidden group hover:border-indigo-500/40 transition-all">
             <div>
               <p className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">Completed Jobs</p>
               <h3 className="text-2xl font-bold tracking-tight text-white mt-1">
@@ -716,7 +716,7 @@ function App() {
           </div>
 
           {/* Card 3: Completed with Zoho Skipped / Failed */}
-          <div className="bg-zinc-900/70 border border-zinc-800/80 rounded-2xl p-4 flex items-center justify-between shadow-sm relative overflow-hidden group hover:border-amber-500/40 transition-all">
+          <div className="bg-[#000000] border border-zinc-800 rounded-2xl p-4 flex items-center justify-between shadow-xl relative overflow-hidden group hover:border-amber-500/40 transition-all">
             <div>
               <p className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">Zoho Skipped</p>
               <h3 className="text-2xl font-bold tracking-tight text-amber-400 mt-1">
@@ -730,7 +730,7 @@ function App() {
           </div>
 
           {/* Card 4: Properly Completed (Clean / Nothing in reason) */}
-          <div className="bg-zinc-900/70 border border-zinc-800/80 rounded-2xl p-4 flex items-center justify-between shadow-sm relative overflow-hidden group hover:border-emerald-500/40 transition-all">
+          <div className="bg-[#000000] border border-zinc-800 rounded-2xl p-4 flex items-center justify-between shadow-xl relative overflow-hidden group hover:border-emerald-500/40 transition-all">
             <div>
               <p className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">Clean Completed</p>
               <h3 className="text-2xl font-bold tracking-tight text-emerald-400 mt-1">
@@ -744,7 +744,7 @@ function App() {
           </div>
 
           {/* Card 5: Failed Jobs */}
-          <div className="col-span-2 md:col-span-1 bg-zinc-900/70 border border-zinc-800/80 rounded-2xl p-4 flex items-center justify-between shadow-sm relative overflow-hidden group hover:border-rose-500/40 transition-all">
+          <div className="col-span-2 md:col-span-1 bg-[#000000] border border-zinc-800 rounded-2xl p-4 flex items-center justify-between shadow-xl relative overflow-hidden group hover:border-rose-500/40 transition-all">
             <div>
               <p className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">Failed Jobs</p>
               <h3 className="text-2xl font-bold tracking-tight text-rose-400 mt-1">
@@ -764,8 +764,8 @@ function App() {
           
           {/* SECTION 1: ALL STATS (DEFAULT VIEW - CLIENT LIST) */}
           {activeSection === 'all-stats' && (
-            <div className="bg-zinc-900/80 border border-zinc-800 rounded-2xl shadow-xl overflow-hidden flex flex-col">
-              <div className="px-6 py-4 border-b border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-900/40">
+            <div className="bg-[#000000] border border-zinc-800 rounded-2xl shadow-xl overflow-hidden flex flex-col">
+              <div className="px-6 py-4 border-b border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#000000]">
                 <div className="flex items-center gap-3">
                   {renderNavMenu("text-blue-400")}
                   <div>
@@ -780,7 +780,7 @@ function App() {
 
                 <div className="overflow-x-auto min-h-[450px]">
                   <table className="w-full text-left text-xs">
-                    <thead className="bg-zinc-950/60 text-zinc-400 uppercase tracking-wider font-semibold border-b border-zinc-800">
+                    <thead className="bg-[#000000] text-zinc-400 uppercase tracking-wider font-semibold border-b border-zinc-800">
                       <tr>
                         <th className="px-6 py-3.5">ApplyWizz ID</th>
                         <th className="px-6 py-3.5">Company Email</th>
@@ -852,8 +852,8 @@ function App() {
 
             {/* SECTION 2: ERRORS VIEW */}
             {activeSection === 'errors' && (
-              <div className="bg-zinc-900/80 border border-zinc-800 rounded-2xl shadow-xl overflow-hidden flex flex-col">
-                <div className="px-6 py-4 border-b border-zinc-800 flex items-center justify-between bg-zinc-900/40">
+              <div className="bg-[#000000] border border-zinc-800 rounded-2xl shadow-xl overflow-hidden flex flex-col">
+                <div className="px-6 py-4 border-b border-zinc-800 flex items-center justify-between bg-[#000000]">
                   <div className="flex items-center gap-3">
                     {renderNavMenu("text-rose-400")}
                     <div>
@@ -876,7 +876,7 @@ function App() {
 
                 <div className="overflow-x-auto min-h-[450px]">
                   <table className="w-full text-left text-xs">
-                    <thead className="bg-zinc-950/60 text-zinc-400 uppercase tracking-wider font-semibold border-b border-zinc-800">
+                    <thead className="bg-[#000000] text-zinc-400 uppercase tracking-wider font-semibold border-b border-zinc-800">
                       <tr>
                         <th className="px-6 py-3.5">Timestamp</th>
                         <th className="px-6 py-3.5">ApplyWizz ID</th>
@@ -945,8 +945,8 @@ function App() {
 
             {/* SECTION 3: LIVE LOGS VIEW */}
             {activeSection === 'logs' && (
-              <div className="bg-zinc-900/80 border border-zinc-800 rounded-2xl shadow-xl overflow-hidden flex flex-col h-[650px]">
-                <div className="px-6 py-4 border-b border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-900/40">
+              <div className="bg-[#000000] border border-zinc-800 rounded-2xl shadow-xl overflow-hidden flex flex-col h-[650px]">
+                <div className="px-6 py-4 border-b border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#000000]">
                   <div className="flex items-center gap-3">
                     {renderNavMenu("text-emerald-400")}
                     <div className="flex items-center gap-2">
@@ -980,7 +980,7 @@ function App() {
                   </div>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-4 bg-zinc-950 font-mono text-[11px] leading-relaxed space-y-1 select-text">
+                <div className="flex-1 overflow-y-auto p-4 bg-[#000000] font-mono text-[11px] leading-relaxed space-y-1 select-text">
                   {filteredLogs.length === 0 ? (
                     <div className="text-zinc-600 text-center py-20">No matching logs found...</div>
                   ) : (
@@ -1017,10 +1017,10 @@ function App() {
       {/* 4. "ALL STATS" POP-UP MODAL (CLIENT SPECIFIC) */}
       {selectedClient && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-zinc-950/80 backdrop-blur-md transition-all">
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+          <div className="bg-[#000000] border border-zinc-800 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
             
             {/* Modal Header */}
-            <div className="px-6 py-4 border-b border-zinc-800 flex items-center justify-between bg-zinc-900/80">
+            <div className="px-6 py-4 border-b border-zinc-800 flex items-center justify-between bg-[#000000]">
               <div>
                 <div className="flex items-center gap-2">
                   <h2 className="text-lg font-bold text-white tracking-tight">
@@ -1045,19 +1045,19 @@ function App() {
               
               {/* Client Top Stats (4 Metric Boxes) */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="bg-zinc-950/80 border border-zinc-800/80 rounded-xl p-3">
+                <div className="bg-[#000000] border border-zinc-800 rounded-xl p-3">
                   <p className="text-[10px] font-medium text-zinc-400 uppercase tracking-wider">Completed</p>
                   <p className="text-xl font-bold text-zinc-100 mt-1">{clientCompleted}</p>
                 </div>
-                <div className="bg-zinc-950/80 border border-zinc-800/80 rounded-xl p-3">
+                <div className="bg-[#000000] border border-zinc-800 rounded-xl p-3">
                   <p className="text-[10px] font-medium text-zinc-400 uppercase tracking-wider">Zoho Skipped</p>
                   <p className="text-xl font-bold text-amber-400 mt-1">{clientZohoSkipped}</p>
                 </div>
-                <div className="bg-zinc-950/80 border border-zinc-800/80 rounded-xl p-3">
+                <div className="bg-[#000000] border border-zinc-800 rounded-xl p-3">
                   <p className="text-[10px] font-medium text-zinc-400 uppercase tracking-wider">Clean Completed</p>
                   <p className="text-xl font-bold text-emerald-400 mt-1">{clientCleanCompleted}</p>
                 </div>
-                <div className="bg-zinc-950/80 border border-zinc-800/80 rounded-xl p-3">
+                <div className="bg-[#000000] border border-zinc-800 rounded-xl p-3">
                   <p className="text-[10px] font-medium text-zinc-400 uppercase tracking-wider">Failed</p>
                   <p className="text-xl font-bold text-rose-400 mt-1">{clientFailed}</p>
                 </div>
@@ -1121,7 +1121,7 @@ function App() {
               <div className="border border-zinc-800 rounded-xl overflow-hidden">
                 <div className="overflow-x-auto max-h-[350px]">
                   <table className="w-full text-left text-xs">
-                    <thead className="bg-zinc-950/80 text-zinc-400 uppercase tracking-wider font-semibold sticky top-0 border-b border-zinc-800">
+                    <thead className="bg-[#000000] text-zinc-400 uppercase tracking-wider font-semibold sticky top-0 border-b border-zinc-800">
                       <tr>
                         <th className="px-4 py-3">Time</th>
                         <th className="px-4 py-3">Company</th>
@@ -1130,7 +1130,7 @@ function App() {
                         <th className="px-4 py-3">Reason</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-zinc-800/60 bg-zinc-950/40">
+                    <tbody className="divide-y divide-zinc-800/60 bg-[#000000]">
                       {loadingJobs ? (
                         <tr>
                           <td colSpan="5" className="px-4 py-10 text-center text-zinc-500">
