@@ -1,5 +1,20 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { format } from 'date-fns';
+import { 
+  format, 
+  parseISO, 
+  startOfMonth, 
+  endOfMonth, 
+  startOfWeek, 
+  endOfWeek, 
+  eachDayOfInterval, 
+  isSameMonth, 
+  isSameDay, 
+  addMonths, 
+  subMonths, 
+  subDays, 
+  startOfYear, 
+  endOfYear 
+} from 'date-fns';
 import {
   Activity,
   CheckCircle2,
@@ -18,12 +33,14 @@ import {
   Zap,
   ShieldCheck,
   ChevronRight,
+  ChevronLeft,
   ChevronDown,
   BarChart3,
   AlertOctagon,
   Terminal,
   Layers,
-  Sparkles
+  Sparkles,
+  ArrowRight
 } from 'lucide-react';
 
 function App() {
