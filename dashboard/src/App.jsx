@@ -487,7 +487,7 @@ function App() {
 
   // --- RENDER AUTHENTICATED DASHBOARD ---
   return (
-    <div className="min-h-screen bg-[#616161] text-zinc-100 font-sans selection:bg-blue-600 selection:text-white flex flex-col">
+    <div className="min-h-screen bg-[#393939] text-zinc-100 font-sans selection:bg-blue-600 selection:text-white flex flex-col">
       
       {/* 1. APPLE-STYLE TOP NAV BAR */}
       <header className="sticky top-0 z-40 bg-[#000000] border-b border-zinc-900/80 px-4 lg:px-8 py-2.5 transition-all shadow-md">
