@@ -187,68 +187,111 @@ async function precheckZohoConnections(clientsArray) {
     return uniqueClients;
 }
 
-async function pollZohoForReceipt(job, jobName, company) {
-    const { email_id, applywizz_id } = job;
-    await updateJobStatus(job, 'AWAITING_RECEIPT');
-    log(applywizz_id, `[Zoho] Starting 10-minute email polling for ${email_id}...`);
+async function fetchMessageDetails(email_id, accountId, msg) {
+    const folderId = msg.folderId;
+    const messageId = msg.messageId;
     
+    const messageUrl = `https://zoho-mail-reader.onrender.com/api/zoho/ui/message?email=${encodeURIComponent(email_id)}&accountId=${accountId}&folderId=${folderId}&messageId=${messageId}`;
+    const messageRes = await fetch(messageUrl);
+    if (!messageRes.ok) throw new Error(`HTTP error fetching message! status: ${messageRes.status}`);
+    
+    const messageData = await messageRes.json();
+    const rawTimeMs = parseInt(messageData.message.receivedTime || msg.receivedTime || '0', 10);
+    const readableDate = new Date(rawTimeMs).toLocaleString();
+
+    return {
+        from: messageData.message.from || msg.from,
+        to: messageData.message.to || msg.to,
+        subject: messageData.message.subject || msg.subject,
+        receivedTime: readableDate,
+        text: extractCleanText(messageData.message.htmlContent || messageData.message.content || '')
+    };
+}
+
+async function findMatchingZohoEmail(email_id, jobName, company, submissionTimeMs) {
     const targetFrom = 'applyonline@dice.com';
-    const normalizedJobName = normalizeText(jobName);
-    
-    for (let i = 1; i <= 10; i++) {
-        log(applywizz_id, `[Zoho] Attempt ${i}/10 - Checking inbox...`);
-        try {
-            const inboxUrl = `https://zoho-mail-reader.onrender.com/api/zoho/ui/inbox?email=${encodeURIComponent(email_id)}&limit=10&start=1`;
-            const inboxRes = await fetch(inboxUrl);
-            if (!inboxRes.ok) throw new Error(`HTTP error! status: ${inboxRes.status}`);
-            
-            const inboxData = await inboxRes.json();
-            const accountId = inboxData.accountId;
-            const messages = inboxData.messages || [];
-            
-            let matchedMessage = null;
-            for (const msg of messages) {
-                const fromMatch = msg.from && msg.from.includes(targetFrom);
-                const jobMatch = normalizeText(msg.subject).includes(normalizedJobName);
-                if (fromMatch && jobMatch) {
-                    matchedMessage = msg;
-                    break;
+    const normJob = normalizeText(jobName);
+    const normComp = normalizeText(company);
+
+    const inboxUrl = `https://zoho-mail-reader.onrender.com/api/zoho/ui/inbox?email=${encodeURIComponent(email_id)}&limit=10&start=1`;
+    const inboxRes = await fetch(inboxUrl);
+    if (!inboxRes.ok) throw new Error(`HTTP error! status: ${inboxRes.status}`);
+
+    const inboxData = await inboxRes.json();
+    const accountId = inboxData.accountId;
+    const messages = inboxData.messages || [];
+
+    // Filter by sender and submission timestamp window (with 2 min buffer)
+    const bufferMs = 120000;
+    const diceMessages = messages.filter(msg => {
+        const isFromDice = msg.from && msg.from.includes(targetFrom);
+        const receivedMs = parseInt(msg.receivedTime || '0', 10);
+        return isFromDice && receivedMs >= (submissionTimeMs - bufferMs);
+    });
+
+    for (const msg of diceMessages) {
+        const normSubject = normalizeText(msg.subject);
+
+        // Tier 1: Check if Subject contains both Company AND Job Title
+        const subjectHasComp = normComp ? normSubject.includes(normComp) : true;
+        const subjectHasJob = normJob ? normSubject.includes(normJob) : true;
+
+        if (subjectHasComp && subjectHasJob) {
+            return await fetchMessageDetails(email_id, accountId, msg);
+        }
+
+        // Tier 2 Fallback: If Subject matches company OR contains "application", inspect Body
+        if (subjectHasComp || normSubject.includes('application')) {
+            const fullReceipt = await fetchMessageDetails(email_id, accountId, msg);
+            if (fullReceipt) {
+                const normBody = normalizeText(fullReceipt.text);
+                const bodyHasComp = normComp ? normBody.includes(normComp) : true;
+                const bodyHasJob = normJob ? normBody.includes(normJob) : true;
+                if (bodyHasComp && (bodyHasJob || subjectHasJob)) {
+                    return fullReceipt;
                 }
             }
-            
-            if (matchedMessage) {
-                log(applywizz_id, `[Zoho] Found matching email! Fetching body...`);
-                const folderId = matchedMessage.folderId;
-                const messageId = matchedMessage.messageId;
-                
-                const messageUrl = `https://zoho-mail-reader.onrender.com/api/zoho/ui/message?email=${encodeURIComponent(email_id)}&accountId=${accountId}&folderId=${folderId}&messageId=${messageId}`;
-                const messageRes = await fetch(messageUrl);
-                if (!messageRes.ok) throw new Error(`HTTP error fetching message! status: ${messageRes.status}`);
-                
-                const messageData = await messageRes.json();
-                const rawTimeMs = parseInt(messageData.message.receivedTime);
-                const readableDate = new Date(rawTimeMs).toLocaleString(); 
-
-                const cleanReceipt = {
-                    from: messageData.message.from,
-                    to: messageData.message.to,
-                    subject: messageData.message.subject,
-                    receivedTime: readableDate,
-                    text: extractCleanText(messageData.message.htmlContent)
-                };
-                
-                log(applywizz_id, `[Zoho] Success! Clean Email JSON generated.`);
-                return cleanReceipt;
-            }
-        } catch (err) {
-            log(applywizz_id, `[Zoho] Error during polling: ${err.message}`);
         }
-        
-        if (i < 10) await new Promise(r => setTimeout(r, 60000));
     }
+
+    return null;
+}
+
+function launchBackgroundZohoPolling(job, submissionTimeMs) {
+    const { email_id, applywizz_id, job_name, company, url } = job;
     
-    log(applywizz_id, `[Zoho] Timeout reached. No matching email found after 10 minutes.`);
-    return 'ZOHO_TIMEOUT';
+    (async () => {
+        log(applywizz_id, `[Zoho-BG] Launched detached background polling for ${email_id}...`);
+        for (let i = 1; i <= 10; i++) {
+            log(applywizz_id, `[Zoho-BG] Attempt ${i}/10 - Checking inbox...`);
+            try {
+                const receipt = await findMatchingZohoEmail(email_id, job_name, company, submissionTimeMs);
+                if (receipt) {
+                    log(applywizz_id, `[Zoho-BG] Found matching email on Attempt ${i}! Updating DB.`);
+                    await queryDB(`
+                        UPDATE dicev2_applied_jobs 
+                        SET email_proof = $1, reason = '' 
+                        WHERE applywizz_id = $2 AND url = $3
+                    `, [JSON.stringify(receipt), applywizz_id, url]);
+                    log(applywizz_id, `[Zoho-BG] Success! PostgreSQL updated with email proof.`);
+                    return;
+                }
+            } catch (err) {
+                log(applywizz_id, `[Zoho-BG] Error during polling Attempt ${i}: ${err.message}`);
+            }
+
+            if (i < 10) await new Promise(r => setTimeout(r, 60000));
+        }
+
+        log(applywizz_id, `[Zoho-BG] Timeout reached (10 min). Updating DB.`);
+        await queryDB(`
+            UPDATE dicev2_applied_jobs 
+            SET email_proof = $1, reason = 'zoho skipped' 
+            WHERE applywizz_id = $2 AND url = $3
+        `, [JSON.stringify({ status: "failed to fetch" }), applywizz_id, url]);
+    })().catch(err => {
+        log(applywizz_id, `[Zoho-BG] Fatal unhandled error in background task: ${err.message}`);
+    });
 }
 
 // --- BROWSER AUTOMATION ---
@@ -416,18 +459,14 @@ async function runAutomation(job) {
             log(applywizz_id, `WARNING: S3 missing config. Skipping upload.`);
         }
         
+        const submissionTimeMs = Date.now();
+        jobStatus = 'Completed';
+        
         if (zoho_connected) {
-            const zohoRes = await pollZohoForReceipt(job, job_name, company);
-            jobStatus = 'Completed';
-            if (zohoRes === 'ZOHO_TIMEOUT' || typeof zohoRes === 'string') {
-                jobReason = 'zoho skipped';
-                emailProof = { status: "failed to fetch" };
-            } else {
-                jobReason = '';
-                emailProof = zohoRes;
-            }
+            jobReason = 'awaiting zoho';
+            emailProof = { status: "pending receipt" };
+            launchBackgroundZohoPolling(job, submissionTimeMs);
         } else {
-            jobStatus = 'Completed';
             jobReason = 'zoho skipped';
             emailProof = { status: "not connected" };
         }
