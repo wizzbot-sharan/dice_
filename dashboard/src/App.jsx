@@ -18,6 +18,7 @@ import {
   Zap, 
   ShieldCheck, 
   ChevronRight,
+  ChevronDown,
   BarChart3,
   AlertOctagon,
   Terminal,
@@ -40,9 +41,14 @@ function App() {
   const [fromDate, setFromDate] = useState(todayStr);
   const [toDate, setToDate] = useState(todayStr);
 
+  // Date Picker Modal Popover State
+  const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
+  const [tempFromDate, setTempFromDate] = useState(todayStr);
+  const [tempToDate, setTempToDate] = useState(todayStr);
+
   // Navigation & View State
   const [activeSection, setActiveSection] = useState('all-stats'); // 'all-stats' | 'errors' | 'logs'
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [isMenuDrawerOpen, setIsMenuDrawerOpen] = useState(false);
 
   // Stats & Client Data
   const [stats, setStats] = useState({
@@ -154,6 +160,18 @@ function App() {
       const data = await res.json();
       setLogs(Array.isArray(data) ? data : []);
     } catch (e) {}
+  };
+
+  const openDatePicker = () => {
+    setTempFromDate(fromDate);
+    setTempToDate(toDate);
+    setIsDatePickerOpen(true);
+  };
+
+  const handleApplyDates = () => {
+    setFromDate(tempFromDate);
+    setToDate(tempToDate);
+    setIsDatePickerOpen(false);
   };
 
   const openClientModal = async (client) => {
@@ -374,17 +392,13 @@ function App() {
       <header className="sticky top-0 z-40 backdrop-blur-xl bg-zinc-950/80 border-b border-zinc-800/80 px-4 lg:px-8 py-2.5 transition-all">
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
           
-          {/* Left: Brand Logo & Title */}
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-500 flex items-center justify-center shadow-md shadow-blue-500/20">
-              <Zap className="w-5 h-5 text-white" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-semibold text-sm tracking-tight text-white">ApplyWizz</span>
-                <span className="text-[10px] font-mono tracking-wide px-1.5 py-0.5 rounded-full bg-zinc-800 text-zinc-400 border border-zinc-700">DICE V2</span>
-              </div>
-            </div>
+          {/* Left: Brand Logo Only */}
+          <div className="flex items-center">
+            <img 
+              src="/apply_wizz_logo.jpeg" 
+              alt="ApplyWizz" 
+              className="h-9 w-auto rounded-xl object-contain border border-zinc-800 shadow-sm"
+            />
           </div>
 
           {/* Middle: Centered Action Controls & Date Picker (Apple-Style) */}
@@ -422,29 +436,133 @@ function App() {
               <span>Purge Queue</span>
             </button>
 
-            {/* Date Range Picker (Default: Today) */}
-            <div className="flex items-center gap-1.5 bg-zinc-900/90 border border-zinc-800 rounded-lg px-2.5 py-1 text-xs shadow-inner">
-              <Calendar className="w-3.5 h-3.5 text-zinc-400" />
-              <input
-                type="date"
-                value={fromDate}
-                onChange={(e) => setFromDate(e.target.value)}
-                className="bg-transparent text-zinc-200 text-xs outline-none cursor-pointer [color-scheme:dark]"
-              />
-              <span className="text-zinc-600">→</span>
-              <input
-                type="date"
-                value={toDate}
-                onChange={(e) => setToDate(e.target.value)}
-                className="bg-transparent text-zinc-200 text-xs outline-none cursor-pointer [color-scheme:dark]"
-              />
+            {/* Date Range Modal Popover Trigger */}
+            <div className="relative">
               <button
-                onClick={() => { setFromDate(todayStr); setToDate(todayStr); }}
-                className="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 transition-colors"
-                title="Reset to Today"
+                type="button"
+                onClick={openDatePicker}
+                className="flex items-center gap-2 bg-zinc-900 hover:bg-zinc-800 active:bg-zinc-850 border border-zinc-800 hover:border-zinc-700 rounded-lg px-3 py-1.5 text-xs text-zinc-200 transition-all shadow-inner"
+                title="Filter by Date Range"
               >
-                Today
+                <Calendar className="w-3.5 h-3.5 text-zinc-400" />
+                <span className="font-mono text-xs">
+                  {fromDate === toDate ? fromDate : `${fromDate} → ${toDate}`}
+                </span>
+                <ChevronDown className="w-3 h-3 text-zinc-400" />
               </button>
+
+              {isDatePickerOpen && (
+                <>
+                  <div
+                    className="fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px]"
+                    onClick={() => setIsDatePickerOpen(false)}
+                  />
+                  <div className="absolute top-full mt-2 right-0 z-50 w-80 bg-zinc-900 border border-zinc-700 rounded-2xl p-4 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100">
+                    <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+                      <span className="text-xs font-semibold text-white tracking-tight flex items-center gap-1.5">
+                        <Calendar className="w-3.5 h-3.5 text-blue-400" />
+                        <span>Select Date Window</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setIsDatePickerOpen(false)}
+                        className="p-1 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-zinc-200 transition-colors"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    <div className="py-3 space-y-3">
+                      {/* Presets */}
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => { setTempFromDate(todayStr); setTempToDate(todayStr); }}
+                          className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-[11px] font-medium transition-colors"
+                        >
+                          Today
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const y = new Date();
+                            y.setDate(y.getDate() - 1);
+                            const ys = format(y, 'yyyy-MM-dd');
+                            setTempFromDate(ys);
+                            setTempToDate(ys);
+                          }}
+                          className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-[11px] font-medium transition-colors"
+                        >
+                          Yesterday
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const d7 = new Date();
+                            d7.setDate(d7.getDate() - 6);
+                            setTempFromDate(format(d7, 'yyyy-MM-dd'));
+                            setTempToDate(todayStr);
+                          }}
+                          className="px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-[11px] font-medium transition-colors"
+                        >
+                          Past 7 Days
+                        </button>
+                      </div>
+
+                      {/* Side-by-side From and To with strict cross-validation */}
+                      <div className="grid grid-cols-2 gap-2.5">
+                        <div>
+                          <label className="block text-[10px] uppercase font-semibold text-zinc-400 mb-1">From Date</label>
+                          <input
+                            type="date"
+                            value={tempFromDate}
+                            max={tempToDate}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setTempFromDate(val);
+                              if (val > tempToDate) setTempToDate(val);
+                            }}
+                            className="w-full px-2.5 py-1.5 bg-zinc-950/80 border border-zinc-700 rounded-xl text-xs text-zinc-100 outline-none focus:border-blue-500 [color-scheme:dark]"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] uppercase font-semibold text-zinc-400 mb-1">To Date</label>
+                          <input
+                            type="date"
+                            value={tempToDate}
+                            min={tempFromDate}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setTempToDate(val);
+                              if (val < tempFromDate) setTempFromDate(val);
+                            }}
+                            className="w-full px-2.5 py-1.5 bg-zinc-950/80 border border-zinc-700 rounded-xl text-xs text-zinc-100 outline-none focus:border-blue-500 [color-scheme:dark]"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Actions */}
+                    <div className="pt-3 border-t border-zinc-800 flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setIsDatePickerOpen(false)}
+                        className="px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleApplyDates}
+                        className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold shadow-md shadow-blue-600/30 transition-all"
+                      >
+                        Submit
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
 
@@ -540,92 +658,118 @@ function App() {
 
         </div>
 
-        {/* 3. MAIN WORKSPACE WITH LEFT BURGER MENU & ACTIVE SECTION */}
-        <div className="flex-1 flex flex-col md:flex-row gap-5 items-start">
-          
-          {/* LEFT BURGER / SECTION SWITCHER MENU */}
-          <aside className="w-full md:w-56 shrink-0 bg-zinc-900/80 border border-zinc-800 rounded-2xl p-3 shadow-lg">
-            <div className="flex items-center justify-between px-2 py-1.5 mb-2 border-b border-zinc-800/80">
-              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-zinc-400">
-                <Menu className="w-3.5 h-3.5 text-zinc-400" />
-                <span>Navigation</span>
+        {/* 3. BURGER NAVIGATION DRAWER OVERLAY */}
+        {isMenuDrawerOpen && (
+          <div className="fixed inset-0 z-50 flex items-start justify-start p-4 sm:p-6 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150">
+            <div 
+              className="fixed inset-0" 
+              onClick={() => setIsMenuDrawerOpen(false)} 
+            />
+            <div className="relative z-10 w-72 bg-zinc-900 border border-zinc-700/80 rounded-2xl p-4 shadow-2xl space-y-3 animate-in slide-in-from-left-4 duration-200">
+              <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+                <div className="flex items-center gap-2">
+                  <Menu className="w-4 h-4 text-blue-400" />
+                  <span className="text-xs font-bold text-white uppercase tracking-wider">Navigation</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsMenuDrawerOpen(false)}
+                  className="p-1 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-zinc-100 transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
               </div>
+
+              <nav className="space-y-1.5">
+                {/* Option 1: All Stats */}
+                <button
+                  type="button"
+                  onClick={() => { setActiveSection('all-stats'); setIsMenuDrawerOpen(false); }}
+                  className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-xs font-medium transition-all ${
+                    activeSection === 'all-stats'
+                      ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+                      : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <BarChart3 className="w-4 h-4" />
+                    <span className="font-semibold">All Stats</span>
+                  </div>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono ${
+                    activeSection === 'all-stats' ? 'bg-blue-500/50 text-white' : 'bg-zinc-800 text-zinc-400'
+                  }`}>
+                    {stats.clients.length}
+                  </span>
+                </button>
+
+                {/* Option 2: Errors */}
+                <button
+                  type="button"
+                  onClick={() => { setActiveSection('errors'); setIsMenuDrawerOpen(false); }}
+                  className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-xs font-medium transition-all ${
+                    activeSection === 'errors'
+                      ? 'bg-rose-600 text-white shadow-md shadow-rose-600/30'
+                      : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <AlertOctagon className="w-4 h-4" />
+                    <span className="font-semibold">Errors</span>
+                  </div>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono ${
+                    activeSection === 'errors' ? 'bg-rose-500/50 text-white' : 'bg-rose-500/20 text-rose-400'
+                  }`}>
+                    {stats.totals.total_failed || 0}
+                  </span>
+                </button>
+
+                {/* Option 3: Live Logs */}
+                <button
+                  type="button"
+                  onClick={() => { setActiveSection('logs'); setIsMenuDrawerOpen(false); }}
+                  className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-xs font-medium transition-all ${
+                    activeSection === 'logs'
+                      ? 'bg-zinc-800 text-white border border-zinc-700'
+                      : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <Terminal className="w-4 h-4" />
+                    <span className="font-semibold">Live Logs</span>
+                  </div>
+                  <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+                </button>
+              </nav>
             </div>
+          </div>
+        )}
 
-            <nav className="space-y-1">
-              {/* Option 1: All Stats (Default) */}
-              <button
-                onClick={() => setActiveSection('all-stats')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all ${
-                  activeSection === 'all-stats'
-                    ? 'bg-blue-600 text-white shadow-md shadow-blue-600/20'
-                    : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60'
-                }`}
-              >
-                <div className="flex items-center gap-2.5">
-                  <BarChart3 className="w-4 h-4" />
-                  <span>All Stats</span>
-                </div>
-                <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
-                  activeSection === 'all-stats' ? 'bg-blue-500/50 text-white' : 'bg-zinc-800 text-zinc-400'
-                }`}>
-                  {stats.clients.length}
-                </span>
-              </button>
-
-              {/* Option 2: Errors */}
-              <button
-                onClick={() => setActiveSection('errors')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all ${
-                  activeSection === 'errors'
-                    ? 'bg-rose-600 text-white shadow-md shadow-rose-600/20'
-                    : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60'
-                }`}
-              >
-                <div className="flex items-center gap-2.5">
-                  <AlertOctagon className="w-4 h-4" />
-                  <span>Errors</span>
-                </div>
-                <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
-                  activeSection === 'errors' ? 'bg-rose-500/50 text-white' : 'bg-rose-500/20 text-rose-400'
-                }`}>
-                  {stats.totals.total_failed || 0}
-                </span>
-              </button>
-
-              {/* Option 3: Live Logs */}
-              <button
-                onClick={() => setActiveSection('logs')}
-                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all ${
-                  activeSection === 'logs'
-                    ? 'bg-zinc-800 text-white border border-zinc-700'
-                    : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800/60'
-                }`}
-              >
-                <div className="flex items-center gap-2.5">
-                  <Terminal className="w-4 h-4" />
-                  <span>Live Logs</span>
-                </div>
-                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-              </button>
-            </nav>
-          </aside>
-
-          {/* MAIN CONTENT AREA */}
-          <main className="flex-1 w-full overflow-hidden">
-            
-            {/* SECTION 1: ALL STATS (DEFAULT VIEW - CLIENT LIST) */}
-            {activeSection === 'all-stats' && (
-              <div className="bg-zinc-900/80 border border-zinc-800 rounded-2xl shadow-xl overflow-hidden flex flex-col">
-                <div className="px-6 py-4 border-b border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-900/40">
+        {/* 4. MAIN WORKSPACE (FULL WIDTH) */}
+        <main className="w-full flex-1">
+          
+          {/* SECTION 1: ALL STATS (DEFAULT VIEW - CLIENT LIST) */}
+          {activeSection === 'all-stats' && (
+            <div className="bg-zinc-900/80 border border-zinc-800 rounded-2xl shadow-xl overflow-hidden flex flex-col">
+              <div className="px-6 py-4 border-b border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-900/40">
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setIsMenuDrawerOpen(true)}
+                    className="p-2 bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-850 text-zinc-200 border border-zinc-700 hover:border-zinc-500 rounded-xl flex items-center gap-1.5 text-xs font-semibold shadow-sm transition-all"
+                    title="Open Navigation Menu"
+                  >
+                    <Menu className="w-4 h-4 text-blue-400" />
+                    <span>Menu</span>
+                  </button>
                   <div>
                     <h2 className="text-base font-semibold text-white tracking-tight">Client Performance Overview</h2>
                     <p className="text-xs text-zinc-400">Date window: {fromDate} to {toDate}</p>
                   </div>
-                  <div className="text-xs text-zinc-400">
-                    Showing <span className="text-zinc-200 font-semibold">{stats.clients.length}</span> clients
-                  </div>
                 </div>
+                <div className="text-xs text-zinc-400">
+                  Showing <span className="text-zinc-200 font-semibold">{stats.clients.length}</span> clients
+                </div>
+              </div>
 
                 <div className="overflow-x-auto min-h-[450px]">
                   <table className="w-full text-left text-xs">
@@ -703,12 +847,23 @@ function App() {
             {activeSection === 'errors' && (
               <div className="bg-zinc-900/80 border border-zinc-800 rounded-2xl shadow-xl overflow-hidden flex flex-col">
                 <div className="px-6 py-4 border-b border-zinc-800 flex items-center justify-between bg-zinc-900/40">
-                  <div>
-                    <h2 className="text-base font-semibold text-white tracking-tight flex items-center gap-2">
-                      <AlertOctagon className="w-4 h-4 text-rose-500" />
-                      <span>Failed Applications</span>
-                    </h2>
-                    <p className="text-xs text-zinc-400">Inspection list for jobs that encountered errors ({fromDate} to {toDate})</p>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setIsMenuDrawerOpen(true)}
+                      className="p-2 bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-850 text-zinc-200 border border-zinc-700 hover:border-zinc-500 rounded-xl flex items-center gap-1.5 text-xs font-semibold shadow-sm transition-all"
+                      title="Open Navigation Menu"
+                    >
+                      <Menu className="w-4 h-4 text-rose-400" />
+                      <span>Menu</span>
+                    </button>
+                    <div>
+                      <h2 className="text-base font-semibold text-white tracking-tight flex items-center gap-2">
+                        <AlertOctagon className="w-4 h-4 text-rose-500" />
+                        <span>Failed Applications</span>
+                      </h2>
+                      <p className="text-xs text-zinc-400">Inspection list for jobs that encountered errors ({fromDate} to {toDate})</p>
+                    </div>
                   </div>
                   <button
                     onClick={fetchErrors}
@@ -793,9 +948,20 @@ function App() {
             {activeSection === 'logs' && (
               <div className="bg-zinc-900/80 border border-zinc-800 rounded-2xl shadow-xl overflow-hidden flex flex-col h-[650px]">
                 <div className="px-6 py-4 border-b border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-900/40">
-                  <div className="flex items-center gap-2">
-                    <Terminal className="w-4 h-4 text-blue-400" />
-                    <h2 className="text-base font-semibold text-white tracking-tight">Real-Time System & Worker Logs</h2>
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setIsMenuDrawerOpen(true)}
+                      className="p-2 bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-850 text-zinc-200 border border-zinc-700 hover:border-zinc-500 rounded-xl flex items-center gap-1.5 text-xs font-semibold shadow-sm transition-all"
+                      title="Open Navigation Menu"
+                    >
+                      <Menu className="w-4 h-4 text-emerald-400" />
+                      <span>Menu</span>
+                    </button>
+                    <div className="flex items-center gap-2">
+                      <Terminal className="w-4 h-4 text-blue-400" />
+                      <h2 className="text-base font-semibold text-white tracking-tight">Real-Time System & Worker Logs</h2>
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-3">
@@ -856,8 +1022,6 @@ function App() {
 
           </main>
         </div>
-
-      </div>
 
       {/* 4. "ALL STATS" POP-UP MODAL (CLIENT SPECIFIC) */}
       {selectedClient && (
