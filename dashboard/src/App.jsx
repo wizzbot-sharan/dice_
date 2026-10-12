@@ -288,35 +288,35 @@ function App() {
     return (
       <div className="relative min-h-screen bg-zinc-950 flex items-center justify-center p-6 text-zinc-100 font-sans selection:bg-blue-600 selection:text-white overflow-hidden">
         
-        {/* Responsive Background Images with blur and opacity */}
+        {/* Responsive Background Images with gentle blur and high clarity */}
         <div className="absolute inset-0 pointer-events-none select-none overflow-hidden">
           {/* Desktop background for PC / medium-large displays */}
           <img
             src="/Logo_desktop.png"
             alt="Background"
-            className="hidden md:block w-full h-full object-cover object-center filter blur-[4px] scale-105 opacity-55 transition-all"
+            className="hidden md:block w-full h-full object-cover object-center filter blur-[2px] scale-105 opacity-85 transition-all"
           />
           {/* Mobile background for mobile devices */}
           <img
             src="/Logo_mobile.png"
             alt="Background"
-            className="block md:hidden w-full h-full object-cover object-center filter blur-[4px] scale-105 opacity-55 transition-all"
+            className="block md:hidden w-full h-full object-cover object-center filter blur-[2px] scale-105 opacity-85 transition-all"
           />
-          {/* Translucent overlay for balanced contrast */}
-          <div className="absolute inset-0 bg-zinc-950/50" />
+          {/* Subtle translucent dark tint for contrast */}
+          <div className="absolute inset-0 bg-black/25" />
         </div>
 
-        {/* Translucent Login Card */}
+        {/* Highly Translucent Frosted Glass Login Card */}
         <div className="relative z-10 w-full max-w-md">
-          <div className="bg-zinc-900/65 backdrop-blur-md border border-zinc-700/60 rounded-2xl p-8 shadow-2xl">
+          <div className="bg-black/30 backdrop-blur-md border border-white/15 rounded-3xl p-8 shadow-2xl shadow-black/50">
             
             {/* Header: Just 'Dice Login', no logo */}
             <div className="text-center mb-8">
-              <h1 className="text-2xl font-bold tracking-tight text-white">Dice Login</h1>
+              <h1 className="text-2xl font-bold tracking-tight text-white drop-shadow-md">Dice Login</h1>
             </div>
 
             {loginError && (
-              <div className="mb-6 p-3 bg-red-500/10 border border-red-500/20 rounded-xl flex items-center gap-2 text-red-400 text-xs">
+              <div className="mb-6 p-3 bg-red-500/20 border border-red-500/30 rounded-xl flex items-center gap-2 text-red-300 text-xs backdrop-blur-sm">
                 <AlertOctagon className="w-4 h-4 shrink-0" />
                 <span>{loginError}</span>
               </div>
@@ -324,40 +324,40 @@ function App() {
 
             <form onSubmit={handleLogin} className="space-y-4">
               <div>
-                <label className="block text-xs font-medium text-zinc-300 mb-1.5">Username</label>
+                <label className="block text-xs font-medium text-zinc-200 mb-1.5 drop-shadow-sm">Username</label>
                 <input
                   type="text"
                   required
                   value={loginUser}
                   onChange={(e) => setLoginUser(e.target.value)}
                   placeholder="admin"
-                  className="w-full px-3.5 py-2.5 bg-zinc-950/60 border border-zinc-700/80 rounded-xl text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                  className="w-full px-3.5 py-2.5 bg-black/25 backdrop-blur-sm border border-white/15 rounded-xl text-sm text-zinc-100 placeholder-zinc-400 focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400 transition-all"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-zinc-300 mb-1.5">Password</label>
+                <label className="block text-xs font-medium text-zinc-200 mb-1.5 drop-shadow-sm">Password</label>
                 <input
                   type="password"
                   required
                   value={loginPass}
                   onChange={(e) => setLoginPass(e.target.value)}
                   placeholder="••••••••••••"
-                  className="w-full px-3.5 py-2.5 bg-zinc-950/60 border border-zinc-700/80 rounded-xl text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all"
+                  className="w-full px-3.5 py-2.5 bg-black/25 backdrop-blur-sm border border-white/15 rounded-xl text-sm text-zinc-100 placeholder-zinc-400 focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-400 transition-all"
                 />
               </div>
 
               <button
                 type="submit"
                 disabled={isLoggingIn}
-                className="w-full mt-2 py-2.5 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-white text-sm font-semibold rounded-xl shadow-lg shadow-blue-600/30 transition-all flex items-center justify-center disabled:opacity-50"
+                className="w-full mt-2 py-2.5 bg-blue-600/90 hover:bg-blue-500 active:bg-blue-700 text-white text-sm font-semibold rounded-xl shadow-lg shadow-blue-600/35 transition-all flex items-center justify-center disabled:opacity-50"
               >
                 {isLoggingIn ? 'Authenticating...' : 'Sign In'}
               </button>
             </form>
 
-            <div className="mt-8 text-center border-t border-zinc-800/80 pt-4">
-              <p className="text-[11px] text-zinc-400">Authorized personnel only &bull; Enterprise Session</p>
+            <div className="mt-8 text-center border-t border-white/10 pt-4">
+              <p className="text-[11px] text-zinc-300 drop-shadow-sm">Authorized personnel only &bull; Enterprise Session</p>
             </div>
           </div>
         </div>
