@@ -301,6 +301,107 @@ function App() {
            (l.message && l.message.toLowerCase().includes(q));
   });
 
+  // Render anchored Navigation Menu Dropdown
+  const renderNavMenu = (iconColorClass = "text-blue-400") => (
+    <div className="relative inline-block">
+      <button
+        type="button"
+        onClick={() => setIsMenuDrawerOpen(!isMenuDrawerOpen)}
+        className="p-2 bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-850 text-zinc-200 border border-zinc-700 hover:border-zinc-500 rounded-xl flex items-center gap-1.5 text-xs font-semibold shadow-sm transition-all cursor-pointer"
+        title="Open Navigation Menu"
+      >
+        <Menu className={`w-4 h-4 ${iconColorClass}`} />
+        <span>Menu</span>
+        <ChevronDown className="w-3 h-3 text-zinc-400" />
+      </button>
+
+      {isMenuDrawerOpen && (
+        <>
+          {/* Invisible backdrop to dismiss on click outside */}
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setIsMenuDrawerOpen(false)}
+          />
+
+          {/* Anchored Dropdown Popover */}
+          <div className="absolute top-full left-0 mt-2 z-50 w-64 bg-zinc-900 border border-zinc-700 rounded-2xl p-2.5 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100">
+            <div className="flex items-center justify-between px-2.5 py-1.5 mb-1.5 border-b border-zinc-800">
+              <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-wider">Navigation</span>
+              <button
+                type="button"
+                onClick={() => setIsMenuDrawerOpen(false)}
+                className="p-1 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-zinc-100 transition-colors"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <nav className="space-y-1">
+              {/* Option 1: All Stats */}
+              <button
+                type="button"
+                onClick={() => { setActiveSection('all-stats'); setIsMenuDrawerOpen(false); }}
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all ${
+                  activeSection === 'all-stats'
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
+                    : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
+                }`}
+              >
+                <div className="flex items-center gap-2.5">
+                  <BarChart3 className="w-4 h-4" />
+                  <span className="font-semibold">All Stats</span>
+                </div>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono ${
+                  activeSection === 'all-stats' ? 'bg-blue-500/50 text-white' : 'bg-zinc-800 text-zinc-400'
+                }`}>
+                  {stats.clients.length}
+                </span>
+              </button>
+
+              {/* Option 2: Errors */}
+              <button
+                type="button"
+                onClick={() => { setActiveSection('errors'); setIsMenuDrawerOpen(false); }}
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all ${
+                  activeSection === 'errors'
+                    ? 'bg-rose-600 text-white shadow-md shadow-rose-600/30'
+                    : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
+                }`}
+              >
+                <div className="flex items-center gap-2.5">
+                  <AlertOctagon className="w-4 h-4" />
+                  <span className="font-semibold">Errors</span>
+                </div>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono ${
+                  activeSection === 'errors' ? 'bg-rose-500/50 text-white' : 'bg-rose-500/20 text-rose-400'
+                }`}>
+                  {stats.totals.total_failed || 0}
+                </span>
+              </button>
+
+              {/* Option 3: Live Logs */}
+              <button
+                type="button"
+                onClick={() => { setActiveSection('logs'); setIsMenuDrawerOpen(false); }}
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium transition-all ${
+                  activeSection === 'logs'
+                    ? 'bg-zinc-800 text-white border border-zinc-700'
+                    : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
+                }`}
+              >
+                <div className="flex items-center gap-2.5">
+                  <Terminal className="w-4 h-4" />
+                  <span className="font-semibold">Live Logs</span>
+                </div>
+                <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
+              </button>
+            </nav>
+          </div>
+        </>
+      )}
+    </div>
+  );
+
   // --- RENDER LOGIN VIEW ---
   if (!isAuthenticated) {
     return (
@@ -658,92 +759,6 @@ function App() {
 
         </div>
 
-        {/* 3. BURGER NAVIGATION DRAWER OVERLAY */}
-        {isMenuDrawerOpen && (
-          <div className="fixed inset-0 z-50 flex items-start justify-start p-4 sm:p-6 bg-black/60 backdrop-blur-sm animate-in fade-in duration-150">
-            <div 
-              className="fixed inset-0" 
-              onClick={() => setIsMenuDrawerOpen(false)} 
-            />
-            <div className="relative z-10 w-72 bg-zinc-900 border border-zinc-700/80 rounded-2xl p-4 shadow-2xl space-y-3 animate-in slide-in-from-left-4 duration-200">
-              <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
-                <div className="flex items-center gap-2">
-                  <Menu className="w-4 h-4 text-blue-400" />
-                  <span className="text-xs font-bold text-white uppercase tracking-wider">Navigation</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setIsMenuDrawerOpen(false)}
-                  className="p-1 hover:bg-zinc-800 rounded-lg text-zinc-400 hover:text-zinc-100 transition-colors"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-
-              <nav className="space-y-1.5">
-                {/* Option 1: All Stats */}
-                <button
-                  type="button"
-                  onClick={() => { setActiveSection('all-stats'); setIsMenuDrawerOpen(false); }}
-                  className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-xs font-medium transition-all ${
-                    activeSection === 'all-stats'
-                      ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30'
-                      : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <BarChart3 className="w-4 h-4" />
-                    <span className="font-semibold">All Stats</span>
-                  </div>
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono ${
-                    activeSection === 'all-stats' ? 'bg-blue-500/50 text-white' : 'bg-zinc-800 text-zinc-400'
-                  }`}>
-                    {stats.clients.length}
-                  </span>
-                </button>
-
-                {/* Option 2: Errors */}
-                <button
-                  type="button"
-                  onClick={() => { setActiveSection('errors'); setIsMenuDrawerOpen(false); }}
-                  className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-xs font-medium transition-all ${
-                    activeSection === 'errors'
-                      ? 'bg-rose-600 text-white shadow-md shadow-rose-600/30'
-                      : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <AlertOctagon className="w-4 h-4" />
-                    <span className="font-semibold">Errors</span>
-                  </div>
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono ${
-                    activeSection === 'errors' ? 'bg-rose-500/50 text-white' : 'bg-rose-500/20 text-rose-400'
-                  }`}>
-                    {stats.totals.total_failed || 0}
-                  </span>
-                </button>
-
-                {/* Option 3: Live Logs */}
-                <button
-                  type="button"
-                  onClick={() => { setActiveSection('logs'); setIsMenuDrawerOpen(false); }}
-                  className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl text-xs font-medium transition-all ${
-                    activeSection === 'logs'
-                      ? 'bg-zinc-800 text-white border border-zinc-700'
-                      : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
-                  }`}
-                >
-                  <div className="flex items-center gap-3">
-                    <Terminal className="w-4 h-4" />
-                    <span className="font-semibold">Live Logs</span>
-                  </div>
-                  <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-                </button>
-              </nav>
-            </div>
-          </div>
-        )}
-
         {/* 4. MAIN WORKSPACE (FULL WIDTH) */}
         <main className="w-full flex-1">
           
@@ -752,15 +767,7 @@ function App() {
             <div className="bg-zinc-900/80 border border-zinc-800 rounded-2xl shadow-xl overflow-hidden flex flex-col">
               <div className="px-6 py-4 border-b border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-900/40">
                 <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setIsMenuDrawerOpen(true)}
-                    className="p-2 bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-850 text-zinc-200 border border-zinc-700 hover:border-zinc-500 rounded-xl flex items-center gap-1.5 text-xs font-semibold shadow-sm transition-all"
-                    title="Open Navigation Menu"
-                  >
-                    <Menu className="w-4 h-4 text-blue-400" />
-                    <span>Menu</span>
-                  </button>
+                  {renderNavMenu("text-blue-400")}
                   <div>
                     <h2 className="text-base font-semibold text-white tracking-tight">Client Performance Overview</h2>
                     <p className="text-xs text-zinc-400">Date window: {fromDate} to {toDate}</p>
@@ -848,15 +855,7 @@ function App() {
               <div className="bg-zinc-900/80 border border-zinc-800 rounded-2xl shadow-xl overflow-hidden flex flex-col">
                 <div className="px-6 py-4 border-b border-zinc-800 flex items-center justify-between bg-zinc-900/40">
                   <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setIsMenuDrawerOpen(true)}
-                      className="p-2 bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-850 text-zinc-200 border border-zinc-700 hover:border-zinc-500 rounded-xl flex items-center gap-1.5 text-xs font-semibold shadow-sm transition-all"
-                      title="Open Navigation Menu"
-                    >
-                      <Menu className="w-4 h-4 text-rose-400" />
-                      <span>Menu</span>
-                    </button>
+                    {renderNavMenu("text-rose-400")}
                     <div>
                       <h2 className="text-base font-semibold text-white tracking-tight flex items-center gap-2">
                         <AlertOctagon className="w-4 h-4 text-rose-500" />
@@ -949,15 +948,7 @@ function App() {
               <div className="bg-zinc-900/80 border border-zinc-800 rounded-2xl shadow-xl overflow-hidden flex flex-col h-[650px]">
                 <div className="px-6 py-4 border-b border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-900/40">
                   <div className="flex items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => setIsMenuDrawerOpen(true)}
-                      className="p-2 bg-zinc-800 hover:bg-zinc-700 active:bg-zinc-850 text-zinc-200 border border-zinc-700 hover:border-zinc-500 rounded-xl flex items-center gap-1.5 text-xs font-semibold shadow-sm transition-all"
-                      title="Open Navigation Menu"
-                    >
-                      <Menu className="w-4 h-4 text-emerald-400" />
-                      <span>Menu</span>
-                    </button>
+                    {renderNavMenu("text-emerald-400")}
                     <div className="flex items-center gap-2">
                       <Terminal className="w-4 h-4 text-blue-400" />
                       <h2 className="text-base font-semibold text-white tracking-tight">Real-Time System & Worker Logs</h2>
