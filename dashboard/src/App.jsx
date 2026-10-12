@@ -40,7 +40,8 @@ import {
   Terminal,
   Layers,
   Sparkles,
-  ArrowRight
+  ArrowRight,
+  Trash2
 } from 'lucide-react';
 
 function App() {
@@ -97,6 +98,11 @@ function App() {
   const [clientJobs, setClientJobs] = useState([]);
   const [loadingJobs, setLoadingJobs] = useState(false);
   const [clientFilter, setClientFilter] = useState('all'); // 'all' | 'completed' | 'zoho_skipped' | 'clean' | 'failed'
+
+  // Per-Client Purge State
+  const [clientToPurge, setClientToPurge] = useState(null);
+  const [isPurgingClient, setIsPurgingClient] = useState(false);
+  const [purgeToast, setPurgeToast] = useState(null);
 
   // Action Loading States
   const [isTriggering, setIsTriggering] = useState(false);
@@ -225,6 +231,40 @@ function App() {
       console.error('Error loading client jobs:', e);
     }
     setLoadingJobs(false);
+  };
+
+  const handleConfirmPurge = async () => {
+    if (!clientToPurge) return;
+    setIsPurgingClient(true);
+    try {
+      const res = await fetch('/api/purge-client', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ applywizz_id: clientToPurge.applywizz_id })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setPurgeToast({
+          type: 'success',
+          message: `Purged ${clientToPurge.applywizz_id}: ${data.total_cleared} job(s) removed (${data.cleared_backlog} backlog, ${data.cleared_queue} queued).`
+        });
+        setClientToPurge(null);
+        fetchStats();
+      } else {
+        setPurgeToast({
+          type: 'error',
+          message: data.error || 'Failed to purge client'
+        });
+      }
+    } catch (err) {
+      setPurgeToast({
+        type: 'error',
+        message: err.message || 'Network error while purging client'
+      });
+    } finally {
+      setIsPurgingClient(false);
+      setTimeout(() => setPurgeToast(null), 5000);
+    }
   };
 
   // --- ACTIONS ---
@@ -1004,13 +1044,23 @@ function App() {
                             </span>
                           </td>
                           <td className="px-6 py-3.5 text-right">
-                            <button
-                              onClick={() => openClientModal(client)}
-                              className="inline-flex items-center gap-1 px-3 py-1 bg-zinc-800 hover:bg-blue-600 hover:text-white text-zinc-300 rounded-lg text-xs font-medium transition-all border border-zinc-700 hover:border-transparent"
-                            >
-                              <span>All Stats</span>
-                              <ChevronRight className="w-3.5 h-3.5" />
-                            </button>
+                            <div className="inline-flex items-center gap-2 justify-end">
+                              <button
+                                onClick={() => setClientToPurge(client)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 bg-red-950/40 hover:bg-red-900/60 text-red-400 hover:text-red-300 rounded-lg text-xs font-medium transition-all border border-red-800/60"
+                                title="Purge active queue and backlog for this client"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>Purge</span>
+                              </button>
+                              <button
+                                onClick={() => openClientModal(client)}
+                                className="inline-flex items-center gap-1 px-3 py-1 bg-zinc-800 hover:bg-blue-600 hover:text-white text-zinc-300 rounded-lg text-xs font-medium transition-all border border-zinc-700 hover:border-transparent"
+                              >
+                                <span>All Stats</span>
+                                <ChevronRight className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))
@@ -1360,6 +1410,87 @@ function App() {
             </div>
 
           </div>
+        </div>
+      )}
+
+      {/* Purge Client Confirmation Modal */}
+      {clientToPurge && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-[#000000] border border-zinc-800 rounded-2xl w-full max-w-md shadow-2xl p-6 relative flex flex-col">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white tracking-tight">Purge Client Queue & Backlog</h3>
+                <p className="text-xs text-zinc-400 font-mono mt-0.5">{clientToPurge.applywizz_id}</p>
+              </div>
+            </div>
+
+            <div className="text-xs text-zinc-300 space-y-2 mb-6 bg-zinc-900/50 border border-zinc-800/80 p-3.5 rounded-xl">
+              <p>
+                Are you sure you want to completely purge <span className="text-red-400 font-mono font-semibold">{clientToPurge.applywizz_id}</span>?
+              </p>
+              <ul className="list-disc pl-4 space-y-1 text-zinc-400">
+                <li>Removes all pending job links from RAM and DB live queue.</li>
+                <li>Wipes all job links from the master backlog.</li>
+                <li>Stops any pending automation for this client immediately.</li>
+                <li>Any currently active Chromium worker tab will finish gracefully.</li>
+                <li>Other clients will NOT be affected.</li>
+              </ul>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setClientToPurge(null)}
+                disabled={isPurgingClient}
+                className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl text-xs font-semibold transition-all border border-zinc-700 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmPurge}
+                disabled={isPurgingClient}
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-red-600 hover:bg-red-500 active:bg-red-700 text-white rounded-xl text-xs font-semibold transition-all shadow-lg shadow-red-900/20 disabled:opacity-50"
+              >
+                {isPurgingClient ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    <span>Purging...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Confirm Purge</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      {purgeToast && (
+        <div className={`fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 border text-xs font-medium animate-in fade-in slide-in-from-bottom-5 duration-200 ${
+          purgeToast.type === 'success'
+            ? 'bg-emerald-950/90 border-emerald-700 text-emerald-200'
+            : 'bg-red-950/90 border-red-700 text-red-200'
+        }`}>
+          {purgeToast.type === 'success' ? (
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          ) : (
+            <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+          )}
+          <span>{purgeToast.message}</span>
+          <button
+            onClick={() => setPurgeToast(null)}
+            className="ml-2 text-zinc-400 hover:text-zinc-100"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
 

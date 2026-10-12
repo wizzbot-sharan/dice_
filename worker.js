@@ -947,6 +947,60 @@ app.post('/api/purge-queue', async (req, res) => {
     }
 });
 
+// Purge single client's backlog and live queue from RAM and DB
+app.post('/api/purge-client', async (req, res) => {
+    try {
+        const { applywizz_id } = req.body || {};
+        if (!applywizz_id) {
+            return res.status(400).json({ error: 'applywizz_id is required' });
+        }
+
+        let clearedRamBacklog = 0;
+        let clearedRamQueue = 0;
+
+        // 1. Purge from RAM masterBacklog
+        for (let i = masterBacklog.length - 1; i >= 0; i--) {
+            if (masterBacklog[i].applywizz_id === applywizz_id) {
+                masterBacklog.splice(i, 1);
+                clearedRamBacklog++;
+            }
+        }
+
+        // 2. Purge from RAM jobQueue (only PENDING or COOLDOWN, leave PROCESSING to finish gracefully)
+        for (let i = jobQueue.length - 1; i >= 0; i--) {
+            if (jobQueue[i].applywizz_id === applywizz_id) {
+                if (jobQueue[i].status !== 'PROCESSING') {
+                    jobQueue.splice(i, 1);
+                    clearedRamQueue++;
+                }
+            }
+        }
+
+        // 3. Purge from PostgreSQL Database tables
+        await queryDB('DELETE FROM dicev2_master_backlog WHERE applywizz_id = $1', [applywizz_id]);
+        await queryDB("DELETE FROM dicev2_live_queue WHERE applywizz_id = $1 AND status != 'PROCESSING'", [applywizz_id]);
+
+        // 4. Synchronize DB tables with RAM state
+        await syncLiveQueue();
+        await syncMasterBacklog();
+
+        const totalCleared = clearedRamBacklog + clearedRamQueue;
+        sysLog(`Purged client [${applywizz_id}] from active run queues. Cleared ${clearedRamBacklog} backlog & ${clearedRamQueue} queued jobs.`);
+
+        res.json({
+            success: true,
+            applywizz_id,
+            cleared_backlog: clearedRamBacklog,
+            cleared_queue: clearedRamQueue,
+            total_cleared: totalCleared,
+            message: `Successfully purged ${totalCleared} jobs for ${applywizz_id}`
+        });
+    } catch (err) {
+        sysLog(`ERROR purging client [${req.body?.applywizz_id}]: ${err.message}`);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.get('/api/jobs/:applywizz_id', async (req, res) => {
     try {
         const { applywizz_id } = req.params;
