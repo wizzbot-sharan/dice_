@@ -81,37 +81,43 @@ function printDashboard() {
 
 // --- DB SYNC HELPERS ---
 async function syncLiveQueue() {
-    if (jobQueue.length === 0) {
+    try {
+        if (jobQueue.length === 0) {
+            await queryDB('TRUNCATE TABLE dicev2_live_queue');
+            return;
+        }
+        const values = [];
+        const flatParams = [];
+        let counter = 1;
+        for (const j of jobQueue) {
+            values.push(`($${counter++}, $${counter++}, $${counter++}, $${counter++})`);
+            flatParams.push(j.applywizz_id, j.url, j.status, j.cooldown_until);
+        }
         await queryDB('TRUNCATE TABLE dicev2_live_queue');
-        return;
+        await queryDB(`INSERT INTO dicev2_live_queue (applywizz_id, url, status, cooldown_until) VALUES ${values.join(',')}`, flatParams);
+    } catch (err) {
+        sysLog(`Warning: Failed to sync live queue to DB (${err.message}). Continuing.`);
     }
-    const values = [];
-    const flatParams = [];
-    let counter = 1;
-    for (const j of jobQueue) {
-        values.push(`($${counter++}, $${counter++}, $${counter++}, $${counter++})`);
-        flatParams.push(j.applywizz_id, j.url, j.status, j.cooldown_until);
-    }
-    await queryDB('TRUNCATE TABLE dicev2_live_queue');
-    await queryDB(`INSERT INTO dicev2_live_queue (applywizz_id, url, status, cooldown_until) VALUES ${values.join(',')}`, flatParams);
 }
 
 async function syncMasterBacklog() {
-    if (masterBacklog.length === 0) {
+    try {
+        if (masterBacklog.length === 0) {
+            await queryDB('TRUNCATE TABLE dicev2_master_backlog');
+            return;
+        }
+        const values = [];
+        const flatParams = [];
+        let counter = 1;
+        for (const j of masterBacklog) {
+            values.push(`($${counter++}, $${counter++}, $${counter++})`);
+            flatParams.push(j.applywizz_id, j.email_id, j.url);
+        }
         await queryDB('TRUNCATE TABLE dicev2_master_backlog');
-        return;
+        await queryDB(`INSERT INTO dicev2_master_backlog (applywizz_id, email_id, url) VALUES ${values.join(',')}`, flatParams);
+    } catch (err) {
+        sysLog(`Warning: Failed to sync master backlog to DB (${err.message}). Continuing.`);
     }
-    // PostgreSQL has a limit of 65535 parameters per query. 
-    // 3 columns * 1149 rows = 3447, which is perfectly safe.
-    const values = [];
-    const flatParams = [];
-    let counter = 1;
-    for (const j of masterBacklog) {
-        values.push(`($${counter++}, $${counter++}, $${counter++})`);
-        flatParams.push(j.applywizz_id, j.email_id, j.url);
-    }
-    await queryDB('TRUNCATE TABLE dicev2_master_backlog');
-    await queryDB(`INSERT INTO dicev2_master_backlog (applywizz_id, email_id, url) VALUES ${values.join(',')}`, flatParams);
 }
 
 async function updateJobStatus(job, newStatus) {
@@ -349,14 +355,20 @@ async function runAutomation(job) {
         const expectedElement = emailInput.or(nextButton).or(submitButton);
         await expectedElement.waitFor({ state: 'visible', timeout: 30000 });
 
-        if (await emailInput.isVisible()) {
-            log(applywizz_id, 'Login page detected. Proceeding with login flow...');
+        const isLoginPage = page.url().includes('/login') || await emailInput.isVisible().catch(() => false);
+
+        if (isLoginPage) {
+            log(applywizz_id, 'Login page confirmed via URL/DOM. Proceeding with login flow...');
             const password = process.env.DICE_PASSWORD;
             if (!password) throw new Error("DICE_PASSWORD is not set in .env");
 
             try {
                 await emailInput.fill(email_id);
-                await page.locator('[data-testid="sign-in-button"]').click();
+                const continueBtn = page.locator('[data-testid="sign-in-button"]')
+                    .or(page.locator('button:has-text("Continue with email")'))
+                    .or(page.locator('button[type="submit"]'))
+                    .first();
+                await continueBtn.click();
                 await randomWait(applywizz_id, page, 3000, 6000); 
                 
                 const passwordInput = page.locator('input[name="password"]').first();
@@ -364,7 +376,10 @@ async function runAutomation(job) {
                 await passwordInput.fill(password);
                 
                 log(applywizz_id, 'Logging in...');
-                await page.locator('[data-testid="submit-password"]').click();
+                const submitPassBtn = page.locator('[data-testid="submit-password"]')
+                    .or(page.locator('button[type="submit"]'))
+                    .first();
+                await submitPassBtn.click();
                 await randomWait(applywizz_id, page, 5000, 10000); 
                 
                 const afterLoginElement = nextButton.or(submitButton);
@@ -373,8 +388,9 @@ async function runAutomation(job) {
                 // Failproof Check: Are we literally still trapped on the login screens?
                 const stuckOnEmail = await emailInput.isVisible().catch(() => false);
                 const stuckOnPassword = await page.locator('input[name="password"]').isVisible().catch(() => false);
+                const stillOnLoginUrl = page.url().includes('/login');
                 
-                if (stuckOnEmail || stuckOnPassword) {
+                if (stuckOnEmail || stuckOnPassword || stillOnLoginUrl) {
                     throw new Error("Login Failed: Invalid credentials or account blocked.");
                 } else {
                     // Login succeeded, but we got intercepted by a random Dice popup or slow network.
@@ -591,6 +607,14 @@ async function checkQueue() {
     const nextJob = jobQueue.find(j => j.status === 'PENDING' && !activeUsers.has(j.applywizz_id));
     if (!nextJob) return; 
 
+    // Safeguard: Drop job immediately if client already reached 10 completed jobs
+    if ((clientSuccessCounts[nextJob.applywizz_id] || 0) >= 10) {
+        const idx = jobQueue.indexOf(nextJob);
+        if (idx !== -1) jobQueue.splice(idx, 1);
+        checkQueue();
+        return;
+    }
+
     activeUsers.add(nextJob.applywizz_id);
     activeWorkers++;
     jobsProcessedSinceRestart++;
@@ -749,6 +773,9 @@ async function startJobRun(isFresh = true) {
     
     let jobIdCounter = 1;
     for (const row of rawJobs) {
+        // Skip clients who have already reached their 10 completed jobs cap
+        if ((clientSuccessCounts[row.applywizz_id] || 0) >= 10) continue;
+
         const client = precheckedClients.find(c => c.applywizz_id === row.applywizz_id);
         masterBacklog.push({
             id: jobIdCounter++,
@@ -767,6 +794,9 @@ async function startJobRun(isFresh = true) {
     // 3. Initialize the Dashboard (Exactly 1 job per unique user)
     const uniqueUsers = [...new Set(masterBacklog.map(j => j.applywizz_id))];
     for (const uid of uniqueUsers) {
+        // Double check safeguard
+        if ((clientSuccessCounts[uid] || 0) >= 10) continue;
+
         const nextIdx = masterBacklog.findIndex(j => j.applywizz_id === uid);
         if (nextIdx !== -1) {
             const job = masterBacklog.splice(nextIdx, 1)[0];
