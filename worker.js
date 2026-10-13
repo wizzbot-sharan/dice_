@@ -449,19 +449,29 @@ async function runAutomation(job) {
             throw new Error(`Stuck on wizard: Exceeded ${maxSteps} steps without finding Submit.`);
         }
 
-        log(applywizz_id, 'Taking screenshot and sending to AWS S3...');
-        const finalUrl = page.url();
-        await page.evaluate((url) => {
-            const b = document.createElement('div');
-            b.innerText = `Captured URL: ${url}`;
-            Object.assign(b.style, {
-                position: 'fixed', top: '0', left: '0', width: '100%',
-                backgroundColor: 'rgba(0,0,0,0.8)', color: 'white', padding: '15px',
-                fontSize: '18px', fontWeight: 'bold', zIndex: '2147483647', textAlign: 'center'
-            });
-            document.body.appendChild(b);
-        }, finalUrl);
+        // Navigate back to the original job detail URL in the same page/context
+        log(applywizz_id, 'Navigating back to main job page to capture Applied status proof...');
+        try {
+            await page.goto(url, { waitUntil: 'domcontentloaded' });
+            await randomWait(applywizz_id, page, 5000, 7000); // ~6 seconds wait
+        } catch (navErr) {
+            log(applywizz_id, `Navigation to job URL encountered notice: ${navErr.message}`);
+        }
 
+        // Check for the "Applied" button
+        const appliedButton = page.locator('button[data-testid="apply-button"]').filter({ hasText: /Applied/i })
+            .or(page.locator('button').filter({ hasText: /Applied/i }))
+            .first();
+
+        try {
+            log(applywizz_id, 'Checking for "Applied" status button on job page...');
+            await appliedButton.waitFor({ state: 'visible', timeout: 12000 });
+            log(applywizz_id, 'Confirmed: "Applied" button is visible on job page.');
+        } catch (e) {
+            log(applywizz_id, 'Notice: "Applied" button wait timed out. Capturing fallback screenshot...');
+        }
+
+        log(applywizz_id, 'Taking clean full-page screenshot and sending to AWS S3...');
         const screenshotBuffer = await page.screenshot({ fullPage: true });
         
         // Push to AWS S3
