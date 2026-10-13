@@ -44,7 +44,8 @@ import {
   Trash2,
   Eye,
   ZoomIn,
-  ZoomOut
+  ZoomOut,
+  Globe
 } from 'lucide-react';
 
 function App() {
@@ -57,15 +58,49 @@ function App() {
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
-  // Date State (Defaults to Today)
-  const todayStr = format(new Date(), 'yyyy-MM-dd');
-  const [fromDate, setFromDate] = useState(todayStr);
-  const [toDate, setToDate] = useState(todayStr);
+  // Supported Timezones (Default: IST)
+  const TIMEZONE_OPTIONS = [
+    { key: 'IST', label: 'India (UTC+5:30)', iana: 'Asia/Kolkata' },
+    { key: 'UTC', label: 'UTC (+00:00)', iana: 'UTC' },
+    { key: 'EST', label: 'US Eastern (-04:00)', iana: 'America/New_York' },
+    { key: 'CST', label: 'US Central (-05:00)', iana: 'America/Chicago' },
+    { key: 'PST', label: 'US Pacific (-07:00)', iana: 'America/Los_Angeles' },
+  ];
+  const TZ_IANA_MAP = {
+    IST: 'Asia/Kolkata',
+    UTC: 'UTC',
+    EST: 'America/New_York',
+    CST: 'America/Chicago',
+    PST: 'America/Los_Angeles'
+  };
+
+  const getTodayInTz = (tzKey) => {
+    const iana = TZ_IANA_MAP[tzKey] || 'Asia/Kolkata';
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: iana,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }).format(new Date());
+    } catch {
+      return format(new Date(), 'yyyy-MM-dd');
+    }
+  };
+
+  const [selectedTz, setSelectedTz] = useState(() => {
+    return localStorage.getItem('applywizz_tz') || 'IST';
+  });
+  const [isTzDropdownOpen, setIsTzDropdownOpen] = useState(false);
+
+  // Date State (Defaults to Today in chosen timezone)
+  const [fromDate, setFromDate] = useState(() => getTodayInTz(localStorage.getItem('applywizz_tz') || 'IST'));
+  const [toDate, setToDate] = useState(() => getTodayInTz(localStorage.getItem('applywizz_tz') || 'IST'));
 
   // Date Picker Modal Popover State
   const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
-  const [tempFromDate, setTempFromDate] = useState(todayStr);
-  const [tempToDate, setTempToDate] = useState(todayStr);
+  const [tempFromDate, setTempFromDate] = useState(() => getTodayInTz(localStorage.getItem('applywizz_tz') || 'IST'));
+  const [tempToDate, setTempToDate] = useState(() => getTodayInTz(localStorage.getItem('applywizz_tz') || 'IST'));
   const [calendarMonth, setCalendarMonth] = useState(() => new Date());
   const [selectingEnd, setSelectingEnd] = useState(false);
 
@@ -157,11 +192,69 @@ function App() {
   };
 
   // --- DATA FETCHING ---
+  const formatInTz = (isoDate, tzKey = selectedTz, formatType = 'datetime') => {
+    if (!isoDate) return '-';
+    try {
+      const d = new Date(isoDate);
+      if (isNaN(d.getTime())) return '-';
+      const timeZone = TZ_IANA_MAP[tzKey] || 'Asia/Kolkata';
+
+      if (formatType === 'time-only') {
+        return new Intl.DateTimeFormat('en-US', {
+          timeZone,
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: false
+        }).format(d);
+      }
+
+      if (formatType === 'datetime-short') {
+        const monthDay = new Intl.DateTimeFormat('en-US', { timeZone, month: 'short', day: 'numeric' }).format(d);
+        const time = new Intl.DateTimeFormat('en-US', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+        return `${monthDay}, ${time}`;
+      }
+
+      if (formatType === 'datetime-seconds') {
+        const monthDay = new Intl.DateTimeFormat('en-US', { timeZone, month: 'short', day: 'numeric' }).format(d);
+        const time = new Intl.DateTimeFormat('en-US', { timeZone, hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(d);
+        return `${monthDay}, ${time}`;
+      }
+
+      if (formatType === 'full') {
+        const datePart = new Intl.DateTimeFormat('en-US', { timeZone, month: 'short', day: 'numeric', year: 'numeric' }).format(d);
+        const timePart = new Intl.DateTimeFormat('en-US', { timeZone, hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+        return `${datePart} ${timePart} ${tzKey}`;
+      }
+
+      return new Intl.DateTimeFormat('en-US', { timeZone, dateStyle: 'medium', timeStyle: 'short' }).format(d);
+    } catch {
+      return isoDate;
+    }
+  };
+
+  const handleTimezoneChange = (newTz) => {
+    const oldTz = selectedTz;
+    setSelectedTz(newTz);
+    localStorage.setItem('applywizz_tz', newTz);
+    setIsTzDropdownOpen(false);
+
+    // If current filter is "Today" (from and to equal today in old timezone), slide to today in new timezone
+    const oldToday = getTodayInTz(oldTz);
+    const newToday = getTodayInTz(newTz);
+    if (fromDate === oldToday && toDate === oldToday) {
+      setFromDate(newToday);
+      setToDate(newToday);
+      setTempFromDate(newToday);
+      setTempToDate(newToday);
+    }
+  };
+
   const fetchStats = async () => {
     setLoadingStats(true);
-    let url = '/api/stats?';
+    let url = `/api/stats?tz=${encodeURIComponent(selectedTz)}`;
     if (fromDate && toDate) {
-      url += `from=${fromDate}&to=${toDate} 23:59:59`;
+      url += `&from=${fromDate}&to=${toDate} 23:59:59`;
     }
     try {
       const res = await fetch(url);
@@ -184,9 +277,9 @@ function App() {
 
   const fetchErrors = async () => {
     setLoadingErrors(true);
-    let url = '/api/errors?';
+    let url = `/api/errors?tz=${encodeURIComponent(selectedTz)}`;
     if (fromDate && toDate) {
-      url += `from=${fromDate}&to=${toDate} 23:59:59`;
+      url += `&from=${fromDate}&to=${toDate} 23:59:59`;
     }
     try {
       const res = await fetch(url);
@@ -238,9 +331,9 @@ function App() {
     setClientJobs([]);
     setClientFilter('all');
     setLoadingJobs(true);
-    let url = `/api/jobs/${encodeURIComponent(client.applywizz_id)}?`;
+    let url = `/api/jobs/${encodeURIComponent(client.applywizz_id)}?tz=${encodeURIComponent(selectedTz)}`;
     if (fromDate && toDate) {
-      url += `from=${fromDate}&to=${toDate} 23:59:59`;
+      url += `&from=${fromDate}&to=${toDate} 23:59:59`;
     }
     try {
       const res = await fetch(url);
@@ -362,7 +455,13 @@ function App() {
       const interval = setInterval(fetchLogs, 4000);
       return () => clearInterval(interval);
     }
-  }, [isAuthenticated, fromDate, toDate]);
+  }, [isAuthenticated, fromDate, toDate, selectedTz]);
+
+  useEffect(() => {
+    if (selectedClient) {
+      openClientModal(selectedClient);
+    }
+  }, [selectedTz]);
 
   // Derived Client Modal Stats
   const clientCompleted = clientJobs.filter(j => j.status === 'Completed').length;
@@ -641,6 +740,49 @@ function App() {
               </span>
               <Calendar className="w-3.5 h-3.5 text-blue-400 ml-0.5" />
             </button>
+
+            {/* Timezone Selector Dropdown */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIsTzDropdownOpen(!isTzDropdownOpen)}
+                className="flex items-center gap-1.5 bg-zinc-950 hover:bg-zinc-900 active:bg-zinc-850 border border-zinc-700 hover:border-zinc-500 rounded-xl px-2.5 py-1.5 text-xs text-zinc-200 transition-all shadow-sm cursor-pointer"
+                title="Select Display Timezone"
+              >
+                <Globe className="w-3.5 h-3.5 text-blue-400" />
+                <span className="font-semibold text-zinc-100">{selectedTz}</span>
+                <ChevronDown className="w-3 h-3 text-zinc-400" />
+              </button>
+
+              {isTzDropdownOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setIsTzDropdownOpen(false)} />
+                  <div className="absolute top-full right-0 mt-2 z-50 w-48 bg-[#000000] border border-zinc-800 rounded-2xl p-1.5 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100">
+                    <div className="px-2.5 py-1 text-[10px] font-bold text-zinc-400 uppercase tracking-wider border-b border-zinc-800 mb-1">
+                      Display Timezone
+                    </div>
+                    {TIMEZONE_OPTIONS.map(tz => (
+                      <button
+                        key={tz.key}
+                        type="button"
+                        onClick={() => handleTimezoneChange(tz.key)}
+                        className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-medium transition-all ${
+                          selectedTz === tz.key
+                            ? 'bg-blue-600 text-white font-semibold shadow-md shadow-blue-600/30'
+                            : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
+                        }`}
+                      >
+                        <div className="flex flex-col text-left">
+                          <span className="font-bold">{tz.key}</span>
+                          <span className="text-[10px] opacity-75">{tz.label}</span>
+                        </div>
+                        {selectedTz === tz.key && <CheckCircle2 className="w-3.5 h-3.5 text-white shrink-0 ml-1" />}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
 
           {/* Right: Logout Button */}
@@ -862,7 +1004,7 @@ function App() {
                 <table className="w-full text-left text-xs">
                   <thead className="bg-[#000000] text-zinc-400 uppercase tracking-wider font-semibold border-b border-zinc-800">
                     <tr>
-                      <th className="px-6 py-3.5">Timestamp</th>
+                      <th className="px-6 py-3.5">Timestamp ({selectedTz})</th>
                       <th className="px-6 py-3.5">ApplyWizz ID</th>
                       <th className="px-6 py-3.5">Job Title & Company</th>
                       <th className="px-6 py-3.5">Failed Reason</th>
@@ -889,7 +1031,7 @@ function App() {
                       errors.map((err, i) => (
                         <tr key={i} className="hover:bg-zinc-800/30 transition-colors">
                           <td className="px-6 py-3.5 whitespace-nowrap text-zinc-500 font-mono text-[11px]">
-                            {err.time ? format(new Date(err.time), 'MMM d, HH:mm:ss') : '-'}
+                            {err.time ? formatInTz(err.time, selectedTz, 'datetime-seconds') : '-'}
                           </td>
                           <td className="px-6 py-3.5 font-mono text-zinc-200">
                             {err.applywizz_id}
@@ -975,7 +1117,7 @@ function App() {
                     return (
                       <div key={i} className="flex items-start gap-2 break-all hover:bg-zinc-900/40 px-1 py-0.5 rounded transition-colors">
                         <span className="text-zinc-600 shrink-0">
-                          [{format(new Date(l.time), 'HH:mm:ss')}]
+                          [{formatInTz(l.time, selectedTz, 'time-only')}]
                         </span>
                         <span className={`shrink-0 font-semibold ${isSystem ? 'text-amber-400' : 'text-blue-400'}`}>
                           {isSystem ? '[SYSTEM]' : `[${l.applywizz_id}]`}
@@ -1101,7 +1243,7 @@ function App() {
                   <table className="w-full text-left text-xs">
                     <thead className="bg-[#000000] text-zinc-400 uppercase tracking-wider font-semibold sticky top-0 border-b border-zinc-800">
                       <tr>
-                        <th className="px-4 py-3">Time</th>
+                        <th className="px-4 py-3">Time ({selectedTz})</th>
                         <th className="px-4 py-3">Company</th>
                         <th className="px-4 py-3">Job Title</th>
                         <th className="px-4 py-3">Status</th>
@@ -1129,7 +1271,7 @@ function App() {
                         filteredClientJobs.map((job, idx) => (
                           <tr key={idx} className="hover:bg-zinc-800/30 transition-colors">
                             <td className="px-4 py-3 whitespace-nowrap text-zinc-500 font-mono text-[11px]">
-                              {job.time ? format(new Date(job.time), 'MMM d, HH:mm') : '-'}
+                              {job.time ? formatInTz(job.time, selectedTz, 'datetime-short') : '-'}
                             </td>
                             <td className="px-4 py-3 font-medium text-zinc-200">{job.company}</td>
                             <td className="px-4 py-3 text-blue-400 truncate max-w-xs">
@@ -1281,8 +1423,8 @@ function App() {
 
       {/* Date Range Split-Pane Modal */}
       {isDatePickerOpen && (() => {
-        // Calendar calculations
-        const todayObj = new Date();
+        // Calendar calculations based on selected timezone
+        const todayObj = parseISO(getTodayInTz(selectedTz));
         const monthStart = startOfMonth(calendarMonth);
         const monthEnd = endOfMonth(calendarMonth);
         const calendarStart = startOfWeek(monthStart, { weekStartsOn: 1 });
@@ -1381,14 +1523,14 @@ function App() {
                   {/* From & To Preview Inputs */}
                   <div className="grid grid-cols-2 gap-2.5 mb-4">
                     <div>
-                      <span className="block text-[11px] font-medium text-zinc-400 mb-1">From</span>
+                      <span className="block text-[11px] font-medium text-zinc-400 mb-1">From ({selectedTz})</span>
                       <div className="flex items-center justify-between px-2.5 py-1.5 bg-zinc-900 border border-zinc-700/80 rounded-xl text-xs text-zinc-100 shadow-sm">
                         <span className="truncate">{formatFriendly(tempFromDate) || '-'}</span>
                         <Calendar className="w-3.5 h-3.5 text-blue-400 shrink-0 ml-1" />
                       </div>
                     </div>
                     <div>
-                      <span className="block text-[11px] font-medium text-zinc-400 mb-1">To</span>
+                      <span className="block text-[11px] font-medium text-zinc-400 mb-1">To ({selectedTz})</span>
                       <div className="flex items-center justify-between px-2.5 py-1.5 bg-zinc-900 border border-zinc-700/80 rounded-xl text-xs text-zinc-100 shadow-sm">
                         <span className="truncate">{formatFriendly(tempToDate) || '-'}</span>
                         <Calendar className="w-3.5 h-3.5 text-blue-400 shrink-0 ml-1" />
@@ -1554,7 +1696,7 @@ function App() {
                     {previewScreenshot.name || 'Application Screenshot Proof'}
                   </h3>
                   <p className="text-xs text-zinc-400 truncate">
-                    {previewScreenshot.company} {previewScreenshot.time ? `• ${format(new Date(previewScreenshot.time), 'MMM d, yyyy HH:mm')}` : ''}
+                    {previewScreenshot.company} {previewScreenshot.time ? `• ${formatInTz(previewScreenshot.time, selectedTz, 'full')}` : ''}
                   </p>
                 </div>
               </div>

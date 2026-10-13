@@ -843,14 +843,32 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
+const TZ_MAP = {
+    IST: 'Asia/Kolkata',
+    UTC: 'UTC',
+    EST: 'America/New_York',
+    CST: 'America/Chicago',
+    PST: 'America/Los_Angeles'
+};
+
+function getTimeFilter(from, to, tzKey, startIdx = 1) {
+    if (!from || !to) return { clause: "", params: [] };
+    const tzName = TZ_MAP[tzKey] || 'Asia/Kolkata';
+    return {
+        clause: `(time AT TIME ZONE 'UTC' AT TIME ZONE $${startIdx}) >= $${startIdx + 1}::timestamp AND (time AT TIME ZONE 'UTC' AT TIME ZONE $${startIdx}) <= $${startIdx + 2}::timestamp`,
+        params: [tzName, from, to]
+    };
+}
+
 app.get('/api/stats', async (req, res) => {
     try {
-        const { from, to } = req.query;
+        const { from, to, tz = 'IST' } = req.query;
         let timeFilter = "";
-        const params = [];
+        let params = [];
         if (from && to) {
-            timeFilter = "WHERE time >= $1 AND time <= $2";
-            params.push(from, to);
+            const filter = getTimeFilter(from, to, tz, 1);
+            timeFilter = `WHERE ${filter.clause}`;
+            params = filter.params;
         }
         
         // 1. Distinct active clients directly from clients_additional_info
@@ -918,12 +936,13 @@ app.get('/api/stats', async (req, res) => {
 
 app.get('/api/errors', async (req, res) => {
     try {
-        const { from, to } = req.query;
+        const { from, to, tz = 'IST' } = req.query;
         let timeFilter = "WHERE status = 'Failed'";
         const params = [];
         if (from && to) {
-            timeFilter += " AND time >= $1 AND time <= $2";
-            params.push(from, to);
+            const filter = getTimeFilter(from, to, tz, 1);
+            timeFilter += ` AND ${filter.clause}`;
+            params.push(...filter.params);
         }
         const errors = await queryDB(`
             SELECT applywizz_id, name, company, url, reason, time 
@@ -1008,12 +1027,13 @@ app.post('/api/purge-client', async (req, res) => {
 app.get('/api/jobs/:applywizz_id', async (req, res) => {
     try {
         const { applywizz_id } = req.params;
-        const { from, to } = req.query;
+        const { from, to, tz = 'IST' } = req.query;
         let timeFilter = "";
         const params = [applywizz_id];
         if (from && to) {
-            timeFilter = "AND time >= $2 AND time <= $3";
-            params.push(from, to);
+            const filter = getTimeFilter(from, to, tz, 2);
+            timeFilter = `AND ${filter.clause}`;
+            params.push(...filter.params);
         }
 
         const jobs = await queryDB(`
