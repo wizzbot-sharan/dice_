@@ -46,8 +46,13 @@ const MAX_WORKERS = 10;
 let globalBrowser = null;
 let jobsProcessedSinceRestart = 0;
 let isBrowserRestarting = false;
+let isBrowserIdleClosed = false;
 const BROWSER_RESTART_LIMIT = 50;
 let cooldownTimer = null;
+let backlogPollerInterval = null;
+let consecutiveEmptyPolls = 0;
+let fatalLoginClients = new Set();
+let isRunActive = false;
 
 // --- LOGGING HELPERS ---
 function sysLog(msg) {
@@ -535,6 +540,7 @@ async function runAutomation(job) {
                 }
             }
         } else if (job.fatalLoginError) {
+            fatalLoginClients.add(applywizz_id);
             log(applywizz_id, `Fatal Login Error detected! Dropping all remaining jobs for this client to save resources.`);
             for (let i = masterBacklog.length - 1; i >= 0; i--) {
                 if (masterBacklog[i].applywizz_id === applywizz_id) {
@@ -569,6 +575,16 @@ async function runAutomation(job) {
 
 // --- QUEUE MANAGER ---
 
+async function ensureBrowserOpen() {
+    if (!globalBrowser) {
+        sysLog('Launching Chromium browser for active jobs...');
+        const isHeadless = process.env.HEADLESS !== 'false';
+        globalBrowser = await chromium.launch({ headless: isHeadless });
+        isBrowserIdleClosed = false;
+        jobsProcessedSinceRestart = 0;
+    }
+}
+
 async function performBrowserRestart() {
     try {
         if (globalBrowser) {
@@ -586,6 +602,7 @@ async function performBrowserRestart() {
     
     jobsProcessedSinceRestart = 0;
     isBrowserRestarting = false;
+    isBrowserIdleClosed = false;
     
     sysLog('Browser restarted successfully. Resuming queue...');
     checkQueue();
@@ -617,6 +634,11 @@ async function checkQueue() {
         return;
     }
 
+    // Ensure browser is launched if it was idle-closed
+    if (!globalBrowser) {
+        await ensureBrowserOpen();
+    }
+
     activeUsers.add(nextJob.applywizz_id);
     activeWorkers++;
     jobsProcessedSinceRestart++;
@@ -627,6 +649,7 @@ async function checkQueue() {
 }
 
 function startCooldownEngine() {
+    if (cooldownTimer) clearInterval(cooldownTimer);
     cooldownTimer = setInterval(async () => {
         let changed = false;
         const now = Date.now();
@@ -647,33 +670,167 @@ function startCooldownEngine() {
         }
 
         if (jobQueue.length === 0 && masterBacklog.length === 0 && activeWorkers === 0) {
-            clearInterval(cooldownTimer);
-            sysLog("All queues empty and all jobs complete. Initiating Aggressive RAM Cleanup.");
-            
-            if (globalBrowser) {
-                await globalBrowser.close().catch(() => {});
-                globalBrowser = null; 
-            }
-            
-            activeUsers.clear();
-            clientSuccessCounts = {};
-            jobsProcessedSinceRestart = 0;
-            isBrowserRestarting = false;
-            
-            exec('pkill -f chrome', (err) => {
-                if (!err) sysLog("Assassinated stray Chrome zombie processes.");
-                
-                if (global.gc) {
-                    global.gc();
-                    sysLog("Forced V8 Garbage Collection complete.");
-                } else {
-                    sysLog("Garbage Collection not exposed.");
+            if (consecutiveEmptyPolls >= 2) {
+                await terminateJobRun("No new scraped jobs discovered after 2 consecutive 30-minute background checks.");
+            } else {
+                if (globalBrowser && !isBrowserIdleClosed) {
+                    isBrowserIdleClosed = true;
+                    try {
+                        await globalBrowser.close();
+                    } catch(e) {}
+                    globalBrowser = null;
+                    sysLog(`[SYSTEM] Queues temporarily empty. Closed Chromium to save RAM while waiting for next 30-min background scraper check (Empty checks: ${consecutiveEmptyPolls}/2)...`);
                 }
-                
-                sysLog("Chromium terminated and Memory flushed. Standing by for next Cron trigger...");
-            });
+            }
         }
     }, 10000); 
+}
+
+async function terminateJobRun(reason) {
+    if (backlogPollerInterval) {
+        clearInterval(backlogPollerInterval);
+        backlogPollerInterval = null;
+    }
+    if (cooldownTimer) {
+        clearInterval(cooldownTimer);
+        cooldownTimer = null;
+    }
+    
+    isRunActive = false;
+    consecutiveEmptyPolls = 0;
+    sysLog(`${reason} Initiating Aggressive RAM Cleanup.`);
+    
+    if (globalBrowser) {
+        await globalBrowser.close().catch(() => {});
+        globalBrowser = null; 
+    }
+    isBrowserIdleClosed = false;
+    
+    activeUsers.clear();
+    clientSuccessCounts = {};
+    fatalLoginClients.clear();
+    jobsProcessedSinceRestart = 0;
+    isBrowserRestarting = false;
+    
+    exec('pkill -f chrome', (err) => {
+        if (!err) sysLog("Assassinated stray Chrome zombie processes.");
+        
+        if (global.gc) {
+            global.gc();
+            sysLog("Forced V8 Garbage Collection complete.");
+        } else {
+            sysLog("Garbage Collection not exposed.");
+        }
+        
+        sysLog("Chromium terminated and Memory flushed. Standing by for next Cron trigger...");
+    });
+}
+
+async function pollAndIngestNewJobs() {
+    if (!isRunActive) return;
+    try {
+        sysLog('[POLLER] Running 30-minute background check for newly scraped jobs...');
+
+        const freshJobs = await queryDB(`
+            SELECT d.url, d.applywizz_id, d.title as job_name, d.company, c.company_email as email_id
+            FROM dice_scraped_jobs d
+            JOIN clients_additional_info c ON d.applywizz_id = c.applywizz_id
+            WHERE d.scraped_at > NOW() - INTERVAL '12 hours'
+              AND NOT EXISTS (
+                  SELECT 1 FROM dicev2_applied_jobs a 
+                  WHERE a.url = d.url AND a.applywizz_id = d.applywizz_id
+              );
+        `);
+
+        const existingUrls = new Set([
+            ...jobQueue.map(j => j.url),
+            ...masterBacklog.map(j => j.url)
+        ]);
+
+        const newJobs = [];
+        for (const row of freshJobs) {
+            if (existingUrls.has(row.url)) continue;
+            if ((clientSuccessCounts[row.applywizz_id] || 0) >= 10) continue;
+            if (fatalLoginClients.has(row.applywizz_id)) continue;
+            
+            existingUrls.add(row.url);
+            newJobs.push(row);
+        }
+
+        if (newJobs.length === 0) {
+            sysLog('[POLLER] No new matching scraped jobs found during check.');
+            if (jobQueue.length === 0 && masterBacklog.length === 0 && activeWorkers === 0) {
+                consecutiveEmptyPolls++;
+                sysLog(`[POLLER] Queues are empty. Consecutive empty checks: ${consecutiveEmptyPolls}/2.`);
+                if (consecutiveEmptyPolls >= 2) {
+                    await terminateJobRun("No new scraped jobs discovered after 2 consecutive 30-minute background checks.");
+                }
+            }
+            return;
+        }
+
+        consecutiveEmptyPolls = 0;
+        const uniqueNewClients = [...new Set(newJobs.map(j => j.applywizz_id))];
+        sysLog(`[POLLER] Discovered ${newJobs.length} new scraped jobs across ${uniqueNewClients.length} clients.`);
+
+        const clientsToPrecheck = newJobs.map(r => ({ email_id: r.email_id, applywizz_id: r.applywizz_id }));
+        const precheckedClients = await precheckZohoConnections(clientsToPrecheck);
+
+        let maxId = Math.max(
+            0,
+            ...jobQueue.map(j => j.id || 0),
+            ...masterBacklog.map(j => j.id || 0)
+        );
+
+        for (const row of newJobs) {
+            const client = precheckedClients.find(c => c.applywizz_id === row.applywizz_id);
+            masterBacklog.push({
+                id: ++maxId,
+                applywizz_id: row.applywizz_id,
+                email_id: row.email_id,
+                zoho_connected: client ? client.zoho_connected : false,
+                url: row.url,
+                job_name: row.job_name,
+                company: row.company,
+                status: 'PENDING',
+                cooldown_until: '',
+                cooldown_until_ms: 0
+            });
+        }
+
+        // Promote 1 job into jobQueue for any eligible client who currently has NO job in jobQueue
+        let promotedCount = 0;
+        const clientsInQueue = new Set(jobQueue.map(j => j.applywizz_id));
+        const uniqueBacklogUsers = [...new Set(masterBacklog.map(j => j.applywizz_id))];
+
+        for (const uid of uniqueBacklogUsers) {
+            if ((clientSuccessCounts[uid] || 0) >= 10) continue;
+            if (fatalLoginClients.has(uid)) continue;
+            if (clientsInQueue.has(uid)) continue;
+
+            const nextIdx = masterBacklog.findIndex(j => j.applywizz_id === uid);
+            if (nextIdx !== -1) {
+                const job = masterBacklog.splice(nextIdx, 1)[0];
+                jobQueue.push(job);
+                clientsInQueue.add(uid);
+                promotedCount++;
+            }
+        }
+
+        if (promotedCount > 0) {
+            sysLog(`[POLLER] Promoted ${promotedCount} jobs directly to live queue for idle clients.`);
+        }
+
+        await syncMasterBacklog();
+        await syncLiveQueue();
+
+        if (jobQueue.some(j => j.status === 'PENDING')) {
+            await ensureBrowserOpen();
+            checkQueue();
+        }
+    } catch (err) {
+        sysLog(`[POLLER ERROR] Error during background backlog polling: ${err.message}`);
+    }
 }
 
 // --- INITIALIZATION ---
@@ -732,6 +889,16 @@ async function startJobRun(isFresh = true) {
     }
     sysLog('=== STARTING SCHEDULED JOB RUN ===');
     
+    isRunActive = true;
+    consecutiveEmptyPolls = 0;
+    fatalLoginClients.clear();
+    isBrowserIdleClosed = false;
+
+    // Start 30-minute background backlog scraper poller
+    if (backlogPollerInterval) clearInterval(backlogPollerInterval);
+    backlogPollerInterval = setInterval(pollAndIngestNewJobs, 30 * 60 * 1000);
+    sysLog('Started 30-minute background backlog scraper poller.');
+
     if (isFresh) {
         await queryDB('UPDATE dicev2_client_counters SET completed_count = 0').catch(()=>{});
         clientSuccessCounts = {};
@@ -765,7 +932,8 @@ async function startJobRun(isFresh = true) {
     `);
     
     if (rawJobs.length === 0) {
-        sysLog('No valid fresh jobs found in DB. Standing by.');
+        sysLog('No valid fresh jobs found in DB initially. Standing by with 30-minute background scraper poller active.');
+        startCooldownEngine();
         return;
     }
 
@@ -965,6 +1133,11 @@ app.post('/api/purge-queue', async (req, res) => {
         const deletedCount = masterBacklog.length + jobQueue.length;
         masterBacklog.length = 0;
         jobQueue.length = 0;
+        if (backlogPollerInterval) {
+            clearInterval(backlogPollerInterval);
+            backlogPollerInterval = null;
+        }
+        isRunActive = false;
         sysLog(`Queue manually purged via Dashboard API. Cleared ${deletedCount} items from memory.`);
         res.json({ message: 'Queue Purged Successfully', cleared: deletedCount });
     } catch (err) {
