@@ -909,6 +909,7 @@ app.get('/api/stats', async (req, res) => {
         // 3. Overall Totals
         const totalRes = await queryDB(`
             SELECT 
+                COALESCE(COUNT(DISTINCT CASE WHEN status = 'Completed' THEN applywizz_id END), 0) as clients_with_completed,
                 COALESCE(SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END), 0) as total_completed,
                 COALESCE(SUM(CASE WHEN status = 'Completed' AND (reason ILIKE '%zoho%' OR (reason IS NOT NULL AND reason != '')) THEN 1 ELSE 0 END), 0) as completed_zoho_skipped,
                 COALESCE(SUM(CASE WHEN status = 'Completed' AND (reason IS NULL OR reason = '') THEN 1 ELSE 0 END), 0) as properly_completed,
@@ -922,6 +923,7 @@ app.get('/api/stats', async (req, res) => {
         res.json({
             totals: {
                 active_clients: activeClientsCount,
+                clients_with_completed: parseInt(totalsRow.clients_with_completed || 0, 10),
                 total_completed: parseInt(totalsRow.total_completed || 0, 10),
                 completed_zoho_skipped: parseInt(totalsRow.completed_zoho_skipped || 0, 10),
                 properly_completed: parseInt(totalsRow.properly_completed || 0, 10),

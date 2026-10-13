@@ -20,6 +20,7 @@ import {
   CheckCircle2,
   XCircle,
   Users,
+  UserCheck,
   Calendar,
   X,
   Play,
@@ -112,6 +113,7 @@ function App() {
   const [stats, setStats] = useState({
     totals: {
       active_clients: 0,
+      clients_with_completed: 0,
       total_completed: 0,
       completed_zoho_skipped: 0,
       properly_completed: 0,
@@ -262,6 +264,7 @@ function App() {
       setStats({
         totals: data.totals || {
           active_clients: 0,
+          clients_with_completed: 0,
           total_completed: 0,
           completed_zoho_skipped: 0,
           properly_completed: 0,
@@ -802,8 +805,8 @@ function App() {
 
       <div className="max-w-7xl w-full mx-auto p-4 lg:p-6 space-y-6 flex-1 flex flex-col">
 
-        {/* 2. STATS OVERVIEW BAR UNDER TOP NAV (5 METRIC CARDS) */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 lg:gap-4">
+        {/* 2. STATS OVERVIEW BAR UNDER TOP NAV (6 METRIC CARDS) */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 lg:gap-4">
 
           {/* Card 1: Active Clients */}
           <div className="bg-[#000000] border border-zinc-800 rounded-2xl p-4 flex items-center justify-between shadow-xl relative overflow-hidden group hover:border-blue-500/40 transition-all">
@@ -819,7 +822,23 @@ function App() {
             </div>
           </div>
 
-          {/* Card 2: Total Completed Jobs */}
+          {/* Card 2: Clients with >=1 Completed Job */}
+          <div className="bg-[#000000] border border-zinc-800 rounded-2xl p-4 flex items-center justify-between shadow-xl relative overflow-hidden group hover:border-cyan-500/40 transition-all">
+            <div>
+              <p className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">Clients Completed</p>
+              <h3 className="text-2xl font-bold tracking-tight text-cyan-400 mt-1">
+                {stats.totals.clients_with_completed !== undefined
+                  ? stats.totals.clients_with_completed
+                  : stats.clients.filter(c => (Number(c.completed_count) || 0) > 0).length}
+              </h3>
+              <p className="text-[10px] text-zinc-500 mt-0.5">&ge;1 completed today</p>
+            </div>
+            <div className="w-10 h-10 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 flex items-center justify-center shrink-0">
+              <UserCheck className="w-5 h-5" />
+            </div>
+          </div>
+
+          {/* Card 3: Total Completed Jobs */}
           <div className="bg-[#000000] border border-zinc-800 rounded-2xl p-4 flex items-center justify-between shadow-xl relative overflow-hidden group hover:border-indigo-500/40 transition-all">
             <div>
               <p className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">Completed Jobs</p>
@@ -833,7 +852,7 @@ function App() {
             </div>
           </div>
 
-          {/* Card 3: Completed with Zoho Skipped / Failed */}
+          {/* Card 4: Completed with Zoho Skipped / Failed */}
           <div className="bg-[#000000] border border-zinc-800 rounded-2xl p-4 flex items-center justify-between shadow-xl relative overflow-hidden group hover:border-amber-500/40 transition-all">
             <div>
               <p className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">Zoho Skipped</p>
@@ -847,7 +866,7 @@ function App() {
             </div>
           </div>
 
-          {/* Card 4: Properly Completed (Clean / Nothing in reason) */}
+          {/* Card 5: Properly Completed (Clean / Nothing in reason) */}
           <div className="bg-[#000000] border border-zinc-800 rounded-2xl p-4 flex items-center justify-between shadow-xl relative overflow-hidden group hover:border-emerald-500/40 transition-all">
             <div>
               <p className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">Clean Completed</p>
@@ -861,8 +880,8 @@ function App() {
             </div>
           </div>
 
-          {/* Card 5: Failed Jobs */}
-          <div className="col-span-2 md:col-span-1 bg-[#000000] border border-zinc-800 rounded-2xl p-4 flex items-center justify-between shadow-xl relative overflow-hidden group hover:border-rose-500/40 transition-all">
+          {/* Card 6: Failed Jobs */}
+          <div className="bg-[#000000] border border-zinc-800 rounded-2xl p-4 flex items-center justify-between shadow-xl relative overflow-hidden group hover:border-rose-500/40 transition-all">
             <div>
               <p className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">Failed Jobs</p>
               <h3 className="text-2xl font-bold tracking-tight text-rose-400 mt-1">
@@ -900,6 +919,7 @@ function App() {
                 <table className="w-full text-left text-xs">
                   <thead className="bg-[#000000] text-zinc-400 uppercase tracking-wider font-semibold border-b border-zinc-800">
                     <tr>
+                      <th className="px-4 py-3.5 w-12 text-center text-zinc-500 font-mono">#</th>
                       <th className="px-6 py-3.5">ApplyWizz ID</th>
                       <th className="px-6 py-3.5">Company Email</th>
                       <th className="px-6 py-3.5 text-center">Completed</th>
@@ -910,7 +930,7 @@ function App() {
                   <tbody className="divide-y divide-zinc-800/60">
                     {loadingStats ? (
                       <tr>
-                        <td colSpan="5" className="px-6 py-12 text-center text-zinc-500">
+                        <td colSpan="6" className="px-6 py-12 text-center text-zinc-500">
                           <div className="inline-flex items-center gap-2">
                             <RefreshCw className="w-4 h-4 animate-spin text-blue-500" />
                             <span>Loading client records...</span>
@@ -919,13 +939,16 @@ function App() {
                       </tr>
                     ) : stats.clients.length === 0 ? (
                       <tr>
-                        <td colSpan="5" className="px-6 py-12 text-center text-zinc-500">
+                        <td colSpan="6" className="px-6 py-12 text-center text-zinc-500">
                           No client job activity recorded for this date range.
                         </td>
                       </tr>
                     ) : (
                       stats.clients.map((client, idx) => (
                         <tr key={idx} className="hover:bg-zinc-800/30 transition-colors">
+                          <td className="px-4 py-3.5 text-zinc-500 font-mono text-center font-medium">
+                            {idx + 1}
+                          </td>
                           <td className="px-6 py-3.5 font-medium text-zinc-100 font-mono">
                             {client.applywizz_id}
                           </td>
@@ -1004,6 +1027,7 @@ function App() {
                 <table className="w-full text-left text-xs">
                   <thead className="bg-[#000000] text-zinc-400 uppercase tracking-wider font-semibold border-b border-zinc-800">
                     <tr>
+                      <th className="px-4 py-3.5 w-12 text-center text-zinc-500 font-mono">#</th>
                       <th className="px-6 py-3.5">Timestamp ({selectedTz})</th>
                       <th className="px-6 py-3.5">ApplyWizz ID</th>
                       <th className="px-6 py-3.5">Job Title & Company</th>
@@ -1014,7 +1038,7 @@ function App() {
                   <tbody className="divide-y divide-zinc-800/60">
                     {loadingErrors ? (
                       <tr>
-                        <td colSpan="5" className="px-6 py-12 text-center text-zinc-500">
+                        <td colSpan="6" className="px-6 py-12 text-center text-zinc-500">
                           <div className="inline-flex items-center gap-2">
                             <RefreshCw className="w-4 h-4 animate-spin text-rose-500" />
                             <span>Loading failed applications...</span>
@@ -1023,13 +1047,16 @@ function App() {
                       </tr>
                     ) : errors.length === 0 ? (
                       <tr>
-                        <td colSpan="5" className="px-6 py-12 text-center text-zinc-500">
+                        <td colSpan="6" className="px-6 py-12 text-center text-zinc-500">
                           No failed jobs found for the selected date window. Clean run!
                         </td>
                       </tr>
                     ) : (
                       errors.map((err, i) => (
                         <tr key={i} className="hover:bg-zinc-800/30 transition-colors">
+                          <td className="px-4 py-3.5 text-zinc-500 font-mono text-center font-medium">
+                            {i + 1}
+                          </td>
                           <td className="px-6 py-3.5 whitespace-nowrap text-zinc-500 font-mono text-[11px]">
                             {err.time ? formatInTz(err.time, selectedTz, 'datetime-seconds') : '-'}
                           </td>
@@ -1243,6 +1270,7 @@ function App() {
                   <table className="w-full text-left text-xs">
                     <thead className="bg-[#000000] text-zinc-400 uppercase tracking-wider font-semibold sticky top-0 border-b border-zinc-800">
                       <tr>
+                        <th className="px-3 py-3 w-10 text-center text-zinc-500 font-mono">#</th>
                         <th className="px-4 py-3">Time ({selectedTz})</th>
                         <th className="px-4 py-3">Company</th>
                         <th className="px-4 py-3">Job Title</th>
@@ -1254,7 +1282,7 @@ function App() {
                     <tbody className="divide-y divide-zinc-800/60 bg-[#000000]">
                       {loadingJobs ? (
                         <tr>
-                          <td colSpan="6" className="px-4 py-10 text-center text-zinc-500">
+                          <td colSpan="7" className="px-4 py-10 text-center text-zinc-500">
                             <div className="inline-flex items-center gap-2">
                               <RefreshCw className="w-4 h-4 animate-spin text-blue-500" />
                               <span>Loading client history...</span>
@@ -1263,13 +1291,16 @@ function App() {
                         </tr>
                       ) : filteredClientJobs.length === 0 ? (
                         <tr>
-                          <td colSpan="6" className="px-4 py-10 text-center text-zinc-500">
+                          <td colSpan="7" className="px-4 py-10 text-center text-zinc-500">
                             No jobs found matching this status filter.
                           </td>
                         </tr>
                       ) : (
                         filteredClientJobs.map((job, idx) => (
                           <tr key={idx} className="hover:bg-zinc-800/30 transition-colors">
+                            <td className="px-3 py-3 text-zinc-500 font-mono text-center font-medium">
+                              {idx + 1}
+                            </td>
                             <td className="px-4 py-3 whitespace-nowrap text-zinc-500 font-mono text-[11px]">
                               {job.time ? formatInTz(job.time, selectedTz, 'datetime-short') : '-'}
                             </td>
