@@ -14,7 +14,7 @@ const targetClientId = clientFilterArg ? clientFilterArg.split('=')[1] : null;
 const limitArg = args.find(a => a.startsWith('--limit='));
 const jobLimit = limitArg ? parseInt(limitArg.split('=')[1], 10) : (isTestMode ? 3 : Infinity);
 const concurrencyArg = args.find(a => a.startsWith('--concurrency='));
-const CONCURRENCY = concurrencyArg ? parseInt(concurrencyArg.split('=')[1], 10) : 10;
+const CONCURRENCY = concurrencyArg ? parseInt(concurrencyArg.split('=')[1], 10) : 20;
 const isHeadless = !args.includes('--headed');
 
 // --- DIRECTORIES & CHECKPOINTING ---
@@ -58,7 +58,7 @@ function saveProgress() {
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false },
-    max: 25
+    max: 35
 });
 
 // --- AWS S3 CLIENT ---
