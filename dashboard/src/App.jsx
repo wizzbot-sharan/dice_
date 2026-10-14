@@ -160,6 +160,13 @@ function App() {
   const [isPurgingClient, setIsPurgingClient] = useState(false);
   const [purgeToast, setPurgeToast] = useState(null);
 
+  // Per-Client Run State
+  const [runningClients, setRunningClients] = useState({});
+  const [clientToExtendRun, setClientToExtendRun] = useState(null);
+
+  // Failed Applications Filter ('all', 'app_error', 'preflight')
+  const [errorFilter, setErrorFilter] = useState('all');
+
   // Action Loading States
   const [isTriggering, setIsTriggering] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
@@ -382,6 +389,48 @@ function App() {
     }
   };
 
+  const handleClientRunClick = (client) => {
+    if ((client.completed_count || 0) >= 10) {
+      setClientToExtendRun(client);
+    } else {
+      executeRunClient(client, false);
+    }
+  };
+
+  const executeRunClient = async (client, extendCap) => {
+    const applywizz_id = client.applywizz_id;
+    setRunningClients(prev => ({ ...prev, [applywizz_id]: true }));
+    setClientToExtendRun(null);
+    try {
+      const res = await fetch('/api/run-client', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ applywizz_id, extend_cap: extendCap })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setPurgeToast({
+          type: 'success',
+          message: data.message || `Loaded ${data.count} jobs for ${applywizz_id}!`
+        });
+        fetchStats();
+      } else {
+        setPurgeToast({
+          type: 'error',
+          message: data.error || 'Failed to trigger client run'
+        });
+      }
+    } catch (err) {
+      setPurgeToast({
+        type: 'error',
+        message: err.message || 'Network error triggering run'
+      });
+    } finally {
+      setRunningClients(prev => ({ ...prev, [applywizz_id]: false }));
+      setTimeout(() => setPurgeToast(null), 5000);
+    }
+  };
+
   // --- ACTIONS ---
   const syncClients = async () => {
     if (!window.confirm("Sync all active clients from the API?")) return;
@@ -474,7 +523,8 @@ function App() {
   const clientCleanCompleted = clientJobs.filter(j =>
     j.status === 'Completed' && (!j.reason || j.reason.trim() === '')
   ).length;
-  const clientFailed = clientJobs.filter(j => j.status === 'Failed').length;
+  const clientPreflightFailed = clientJobs.filter(j => j.status === 'Failed' && j.reason === 'no_apply_button').length;
+  const clientFailed = clientJobs.filter(j => j.status === 'Failed' && j.reason !== 'no_apply_button').length;
 
   const filteredClientJobs = clientJobs.filter(j => {
     if (clientFilter === 'completed') return j.status === 'Completed';
@@ -484,7 +534,15 @@ function App() {
     if (clientFilter === 'clean') {
       return j.status === 'Completed' && (!j.reason || j.reason.trim() === '');
     }
-    if (clientFilter === 'failed') return j.status === 'Failed';
+    if (clientFilter === 'preflight_failed') return j.status === 'Failed' && j.reason === 'no_apply_button';
+    if (clientFilter === 'failed') return j.status === 'Failed' && j.reason !== 'no_apply_button';
+    return true;
+  });
+
+  // Filtered errors
+  const filteredErrors = errors.filter(err => {
+    if (errorFilter === 'preflight') return err.reason === 'no_apply_button';
+    if (errorFilter === 'app_error') return err.reason !== 'no_apply_button';
     return true;
   });
 
@@ -805,8 +863,8 @@ function App() {
 
       <div className="max-w-7xl w-full mx-auto p-4 lg:p-6 space-y-6 flex-1 flex flex-col">
 
-        {/* 2. STATS OVERVIEW BAR UNDER TOP NAV (6 METRIC CARDS) */}
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 lg:gap-4">
+        {/* 2. STATS OVERVIEW BAR UNDER TOP NAV (7 METRIC CARDS) */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3 lg:gap-4">
 
           {/* Card 1: Active Clients */}
           <div className="bg-[#000000] border border-zinc-800 rounded-2xl p-4 flex items-center justify-between shadow-xl relative overflow-hidden group hover:border-blue-500/40 transition-all">
@@ -880,14 +938,28 @@ function App() {
             </div>
           </div>
 
-          {/* Card 6: Failed Jobs */}
+          {/* Card 6: Preflight Failed */}
+          <div className="bg-[#000000] border border-zinc-800 rounded-2xl p-4 flex items-center justify-between shadow-xl relative overflow-hidden group hover:border-amber-500/40 transition-all">
+            <div>
+              <p className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">Preflight Failed</p>
+              <h3 className="text-2xl font-bold tracking-tight text-amber-400 mt-1">
+                {stats.totals.total_preflight_failed || 0}
+              </h3>
+              <p className="text-[10px] text-zinc-500 mt-0.5">no apply button / expired</p>
+            </div>
+            <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+              <AlertOctagon className="w-5 h-5" />
+            </div>
+          </div>
+
+          {/* Card 7: Failed Jobs */}
           <div className="bg-[#000000] border border-zinc-800 rounded-2xl p-4 flex items-center justify-between shadow-xl relative overflow-hidden group hover:border-rose-500/40 transition-all">
             <div>
               <p className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">Failed Jobs</p>
               <h3 className="text-2xl font-bold tracking-tight text-rose-400 mt-1">
                 {stats.totals.total_failed || 0}
               </h3>
-              <p className="text-[10px] text-zinc-500 mt-0.5">errors logged</p>
+              <p className="text-[10px] text-zinc-500 mt-0.5">execution errors</p>
             </div>
             <div className="w-10 h-10 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 flex items-center justify-center shrink-0">
               <XCircle className="w-5 h-5" />
@@ -923,6 +995,7 @@ function App() {
                       <th className="px-6 py-3.5">ApplyWizz ID</th>
                       <th className="px-6 py-3.5">Company Email</th>
                       <th className="px-6 py-3.5 text-center">Completed</th>
+                      <th className="px-6 py-3.5 text-center">Preflight Failed</th>
                       <th className="px-6 py-3.5 text-center">Failed</th>
                       <th className="px-6 py-3.5 text-right">Action</th>
                     </tr>
@@ -930,7 +1003,7 @@ function App() {
                   <tbody className="divide-y divide-zinc-800/60">
                     {loadingStats ? (
                       <tr>
-                        <td colSpan="6" className="px-6 py-12 text-center text-zinc-500">
+                        <td colSpan="7" className="px-6 py-12 text-center text-zinc-500">
                           <div className="inline-flex items-center gap-2">
                             <RefreshCw className="w-4 h-4 animate-spin text-blue-500" />
                             <span>Loading client records...</span>
@@ -939,7 +1012,7 @@ function App() {
                       </tr>
                     ) : stats.clients.length === 0 ? (
                       <tr>
-                        <td colSpan="6" className="px-6 py-12 text-center text-zinc-500">
+                        <td colSpan="7" className="px-6 py-12 text-center text-zinc-500">
                           No client job activity recorded for this date range.
                         </td>
                       </tr>
@@ -964,6 +1037,14 @@ function App() {
                             </span>
                           </td>
                           <td className="px-6 py-3.5 text-center">
+                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${(client.preflight_failed_count || 0) > 0
+                              ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
+                              : 'bg-zinc-800/60 text-zinc-500'
+                              }`} title="Jobs with no apply button, external apply, or expired">
+                              {client.preflight_failed_count || 0}
+                            </span>
+                          </td>
+                          <td className="px-6 py-3.5 text-center">
                             <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${(client.failed_count || 0) > 0
                               ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
                               : 'bg-zinc-800/60 text-zinc-500'
@@ -973,6 +1054,19 @@ function App() {
                           </td>
                           <td className="px-6 py-3.5 text-right">
                             <div className="inline-flex items-center gap-2 justify-end">
+                              <button
+                                onClick={() => handleClientRunClick(client)}
+                                disabled={runningClients[client.applywizz_id]}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-950/40 hover:bg-emerald-900/60 text-emerald-400 hover:text-emerald-300 rounded-lg text-xs font-medium transition-all border border-emerald-800/60 disabled:opacity-50"
+                                title="Run unapplied scraped jobs for this client"
+                              >
+                                {runningClients[client.applywizz_id] ? (
+                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <Play className="w-3.5 h-3.5 fill-current" />
+                                )}
+                                <span>Run</span>
+                              </button>
                               <button
                                 onClick={() => setClientToPurge(client)}
                                 className="inline-flex items-center gap-1 px-2.5 py-1 bg-red-950/40 hover:bg-red-900/60 text-red-400 hover:text-red-300 rounded-lg text-xs font-medium transition-all border border-red-800/60"
@@ -1002,7 +1096,7 @@ function App() {
           {/* SECTION 2: ERRORS VIEW */}
           {activeSection === 'errors' && (
             <div className="bg-[#000000] border border-zinc-800 rounded-2xl shadow-xl overflow-hidden flex flex-col">
-              <div className="px-6 py-4 border-b border-zinc-800 flex items-center justify-between bg-[#000000]">
+              <div className="px-6 py-4 border-b border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#000000]">
                 <div className="flex items-center gap-3">
                   {renderNavMenu("text-rose-400")}
                   <div>
@@ -1013,14 +1107,47 @@ function App() {
                     <p className="text-xs text-zinc-400">Inspection list for jobs that encountered errors ({fromDate} to {toDate})</p>
                   </div>
                 </div>
-                <button
-                  onClick={fetchErrors}
-                  disabled={loadingErrors}
-                  className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors"
-                  title="Refresh Errors"
-                >
-                  <RefreshCw className={`w-4 h-4 ${loadingErrors ? 'animate-spin' : ''}`} />
-                </button>
+
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-1.5 bg-zinc-900/80 p-1 rounded-xl border border-zinc-800">
+                    <button
+                      type="button"
+                      onClick={() => setErrorFilter('all')}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${errorFilter === 'all'
+                        ? 'bg-zinc-800 text-white shadow-sm'
+                        : 'text-zinc-400 hover:text-zinc-200'}`}
+                    >
+                      All ({errors.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setErrorFilter('app_error')}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${errorFilter === 'app_error'
+                        ? 'bg-rose-950/60 text-rose-300 border border-rose-800/60 shadow-sm'
+                        : 'text-zinc-400 hover:text-zinc-200'}`}
+                    >
+                      Execution Failed ({errors.filter(e => e.reason !== 'no_apply_button').length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setErrorFilter('preflight')}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${errorFilter === 'preflight'
+                        ? 'bg-amber-950/60 text-amber-300 border border-amber-800/60 shadow-sm'
+                        : 'text-zinc-400 hover:text-zinc-200'}`}
+                    >
+                      Preflight Failed ({errors.filter(e => e.reason === 'no_apply_button').length})
+                    </button>
+                  </div>
+
+                  <button
+                    onClick={fetchErrors}
+                    disabled={loadingErrors}
+                    className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors"
+                    title="Refresh Errors"
+                  >
+                    <RefreshCw className={`w-4 h-4 ${loadingErrors ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
               </div>
 
               <div className="overflow-x-auto min-h-[450px]">
@@ -1045,14 +1172,14 @@ function App() {
                           </div>
                         </td>
                       </tr>
-                    ) : errors.length === 0 ? (
+                    ) : filteredErrors.length === 0 ? (
                       <tr>
                         <td colSpan="6" className="px-6 py-12 text-center text-zinc-500">
-                          No failed jobs found for the selected date window. Clean run!
+                          No failed jobs found matching this filter. Clean run!
                         </td>
                       </tr>
                     ) : (
-                      errors.map((err, i) => (
+                      filteredErrors.map((err, i) => (
                         <tr key={i} className="hover:bg-zinc-800/30 transition-colors">
                           <td className="px-4 py-3.5 text-zinc-500 font-mono text-center font-medium">
                             {i + 1}
@@ -1068,9 +1195,15 @@ function App() {
                             <div className="text-[11px] text-zinc-500 truncate">{err.company || 'Unknown Company'}</div>
                           </td>
                           <td className="px-6 py-3.5 max-w-md">
-                            <span className="inline-block px-2.5 py-1 rounded bg-rose-500/10 border border-rose-500/20 text-rose-400 font-mono text-[11px] break-words">
-                              {err.reason || 'Unknown error occurred'}
-                            </span>
+                            {err.reason === 'no_apply_button' ? (
+                              <span className="inline-block px-2.5 py-1 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 font-mono text-[11px] break-words">
+                                Preflight: No Apply Button / Expired
+                              </span>
+                            ) : (
+                              <span className="inline-block px-2.5 py-1 rounded bg-rose-500/10 border border-rose-500/20 text-rose-400 font-mono text-[11px] break-words">
+                                {err.reason || 'Unknown error occurred'}
+                              </span>
+                            )}
                           </td>
                           <td className="px-6 py-3.5 text-right whitespace-nowrap">
                             {err.url ? (
@@ -1195,8 +1328,8 @@ function App() {
             {/* Modal Body */}
             <div className="p-6 space-y-6 overflow-y-auto flex-1">
 
-              {/* Client Top Stats (4 Metric Boxes) */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {/* Client Top Stats (5 Metric Boxes) */}
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                 <div className="bg-[#000000] border border-zinc-800 rounded-xl p-3">
                   <p className="text-[10px] font-medium text-zinc-400 uppercase tracking-wider">Completed</p>
                   <p className="text-xl font-bold text-zinc-100 mt-1">{clientCompleted}</p>
@@ -1208,6 +1341,10 @@ function App() {
                 <div className="bg-[#000000] border border-zinc-800 rounded-xl p-3">
                   <p className="text-[10px] font-medium text-zinc-400 uppercase tracking-wider">Clean Completed</p>
                   <p className="text-xl font-bold text-emerald-400 mt-1">{clientCleanCompleted}</p>
+                </div>
+                <div className="bg-[#000000] border border-zinc-800 rounded-xl p-3">
+                  <p className="text-[10px] font-medium text-zinc-400 uppercase tracking-wider">Preflight Failed</p>
+                  <p className="text-xl font-bold text-amber-400 mt-1">{clientPreflightFailed}</p>
                 </div>
                 <div className="bg-[#000000] border border-zinc-800 rounded-xl p-3">
                   <p className="text-[10px] font-medium text-zinc-400 uppercase tracking-wider">Failed</p>
@@ -1252,6 +1389,15 @@ function App() {
                     }`}
                 >
                   Clean Completed ({clientCleanCompleted})
+                </button>
+                <button
+                  onClick={() => setClientFilter('preflight_failed')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${clientFilter === 'preflight_failed'
+                    ? 'bg-amber-600 text-white'
+                    : 'bg-zinc-800/70 text-zinc-400 hover:text-zinc-200'
+                    }`}
+                >
+                  Preflight Failed ({clientPreflightFailed})
                 </button>
                 <button
                   onClick={() => setClientFilter('failed')}
@@ -1321,6 +1467,10 @@ function App() {
                                 <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
                                   Completed
                                 </span>
+                              ) : job.reason === 'no_apply_button' ? (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-amber-500/10 border border-amber-500/20 text-amber-400">
+                                  Preflight Failed
+                                </span>
                               ) : (
                                 <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-rose-500/10 border border-rose-500/20 text-rose-400">
                                   Failed
@@ -1349,7 +1499,11 @@ function App() {
                               )}
                             </td>
                             <td className="px-4 py-3 text-zinc-400 font-mono text-[11px] max-w-xs truncate" title={job.reason}>
-                              {job.reason ? (
+                              {job.reason === 'no_apply_button' ? (
+                                <span className="text-amber-400 font-semibold">
+                                  No apply button / Expired
+                                </span>
+                              ) : job.reason ? (
                                 <span className={job.reason.toLowerCase().includes('zoho') ? 'text-amber-400' : 'text-zinc-300'}>
                                   {job.reason}
                                 </span>
@@ -1424,6 +1578,50 @@ function App() {
                     <span>Confirm Purge</span>
                   </>
                 )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Cap-Extension Run Confirmation Modal */}
+      {clientToExtendRun && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-[#000000] border border-zinc-800 rounded-2xl w-full max-w-md shadow-2xl p-6 relative flex flex-col">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white tracking-tight">Daily Cap Reached</h3>
+                <p className="text-xs text-zinc-400 font-mono mt-0.5">{clientToExtendRun.applywizz_id}</p>
+              </div>
+            </div>
+
+            <div className="text-xs text-zinc-300 space-y-2 mb-6 bg-zinc-900/50 border border-zinc-800/80 p-3.5 rounded-xl">
+              <p>
+                <span className="text-amber-400 font-mono font-semibold">{clientToExtendRun.applywizz_id}</span> has already completed <span className="font-bold text-white">{clientToExtendRun.completed_count || 10}</span> jobs today (cap is 10).
+              </p>
+              <p className="text-zinc-400">
+                Do you want to extend their cap and queue their unapplied scraped jobs anyway?
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setClientToExtendRun(null)}
+                className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl text-xs font-semibold transition-all border border-zinc-700"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => executeRunClient(clientToExtendRun, true)}
+                className="inline-flex items-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white rounded-xl text-xs font-semibold transition-all shadow-lg shadow-emerald-900/20"
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+                <span>Extend Cap & Run</span>
               </button>
             </div>
           </div>

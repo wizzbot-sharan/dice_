@@ -722,6 +722,8 @@ async function terminateJobRun(reason) {
     jobsProcessedSinceRestart = 0;
     isBrowserRestarting = false;
     
+    await queryDB('TRUNCATE TABLE trigger_client').catch(() => {});
+    
     exec('pkill -f chrome', (err) => {
         if (!err) sysLog("Assassinated stray Chrome zombie processes.");
         
@@ -887,18 +889,115 @@ async function initializeDatabase() {
             applywizz_id VARCHAR PRIMARY KEY,
             completed_count INT DEFAULT 0
         );
+        CREATE TABLE IF NOT EXISTS trigger_client (
+            applywizz_id VARCHAR PRIMARY KEY,
+            status VARCHAR,
+            triggered_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
     `);
 }
 
 let clientSuccessCounts = {};
 
+async function getTodayClientCompletedCount(applywizz_id) {
+    try {
+        const res = await queryDB(`
+            SELECT COUNT(*) as count 
+            FROM dicev2_applied_jobs 
+            WHERE applywizz_id = $1 
+              AND status = 'Completed' 
+              AND (time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
+        `, [applywizz_id]);
+        return parseInt(res[0]?.count || 0, 10);
+    } catch (e) {
+        return 0;
+    }
+}
+
 async function startJobRun(isFresh = true) {
-    if (jobQueue.length > 0 || masterBacklog.length > 0) {
-        sysLog('WARNING: Previous run is still active. Skipping this Cron trigger.');
+    const isAlreadyRunning = isRunActive || jobQueue.length > 0 || masterBacklog.length > 0;
+
+    if (isAlreadyRunning) {
+        sysLog('=== SCHEDULED CRON FIRED (MERGE MODE) ===');
+        sysLog('Automation is currently active with early triggered clients. Merging remaining clients...');
+
+        // Fetch remaining clients not yet triggered via trigger_client
+        const rawJobs = await queryDB(`
+            SELECT d.url, d.applywizz_id, d.title as job_name, d.company, c.company_email as email_id
+            FROM dice_scraped_jobs d
+            JOIN clients_additional_info c ON d.applywizz_id = c.applywizz_id
+            WHERE d.applywizz_id NOT IN (SELECT applywizz_id FROM trigger_client)
+              AND d.scraped_at > NOW() - INTERVAL '24 hours'
+              AND NOT EXISTS (
+                  SELECT 1 FROM dicev2_applied_jobs a 
+                  WHERE a.url = d.url AND a.applywizz_id = d.applywizz_id
+              );
+        `);
+
+        if (rawJobs.length === 0) {
+            sysLog('[MERGE] No remaining clients or fresh jobs to merge. Continuing with current active queues.');
+            return;
+        }
+
+        // Deduplicate against active memory
+        const existingUrls = new Set([...jobQueue.map(j => j.url), ...masterBacklog.map(j => j.url)]);
+        const newJobs = rawJobs.filter(j => !existingUrls.has(j.url));
+
+        if (newJobs.length === 0) {
+            sysLog('[MERGE] All remaining jobs are already in memory. Continuing.');
+            return;
+        }
+
+        const clientsToPrecheck = newJobs.map(r => ({ email_id: r.email_id, applywizz_id: r.applywizz_id }));
+        const precheckedClients = await precheckZohoConnections(clientsToPrecheck);
+
+        let maxId = Math.max(0, ...jobQueue.map(j => j.id || 0), ...masterBacklog.map(j => j.id || 0));
+        for (const row of newJobs) {
+            const todayCount = await getTodayClientCompletedCount(row.applywizz_id);
+            if (todayCount >= 10) continue;
+
+            const client = precheckedClients.find(c => c.applywizz_id === row.applywizz_id);
+            masterBacklog.push({
+                id: ++maxId,
+                applywizz_id: row.applywizz_id,
+                email_id: row.email_id,
+                zoho_connected: client ? client.zoho_connected : false,
+                url: row.url,
+                job_name: row.job_name,
+                company: row.company,
+                status: 'PENDING',
+                cooldown_until: '',
+                cooldown_until_ms: 0
+            });
+        }
+
+        // Promote exactly 1 job per remaining client who has 0 jobs in jobQueue
+        const uniqueRemainingUsers = [...new Set(newJobs.map(j => j.applywizz_id))];
+        for (const uid of uniqueRemainingUsers) {
+            const hasInQueue = jobQueue.some(j => j.applywizz_id === uid);
+            if (!hasInQueue) {
+                const nextIdx = masterBacklog.findIndex(j => j.applywizz_id === uid);
+                if (nextIdx !== -1) {
+                    jobQueue.push(masterBacklog.splice(nextIdx, 1)[0]);
+                }
+            }
+        }
+
+        await syncMasterBacklog();
+        await syncLiveQueue();
+
+        if (!globalBrowser) {
+            sysLog('[MERGE] Launching Chromium browser for merged clients...');
+            const isHeadless = process.env.HEADLESS !== 'false';
+            globalBrowser = await chromium.launch({ headless: isHeadless });
+        }
+
+        checkQueue();
+        sysLog(`[MERGE] Merged ${newJobs.length} fresh jobs for remaining clients. Active queue size: ${jobQueue.length}, Backlog: ${masterBacklog.length}`);
         return;
     }
-    sysLog('=== STARTING SCHEDULED JOB RUN ===');
-    
+
+    sysLog('=== STARTING SCHEDULED JOB RUN (FRESH MODE) ===');
     isRunActive = true;
     consecutiveEmptyPolls = 0;
     fatalLoginClients.clear();
@@ -909,18 +1008,6 @@ async function startJobRun(isFresh = true) {
     backlogPollerInterval = setInterval(pollAndIngestNewJobs, 30 * 60 * 1000);
     sysLog('Started 30-minute background backlog scraper poller.');
 
-    if (isFresh) {
-        await queryDB('UPDATE dicev2_client_counters SET completed_count = 0').catch(()=>{});
-        clientSuccessCounts = {};
-    } else {
-        try {
-            const dbCounts = await queryDB('SELECT applywizz_id, completed_count FROM dicev2_client_counters');
-            for (const row of dbCounts) {
-                clientSuccessCounts[row.applywizz_id] = parseInt(row.completed_count, 10);
-            }
-        } catch(e){}
-    }
-    
     if (!process.env.DATABASE_URL) {
         sysLog('CRITICAL ERROR: DATABASE_URL not set in .env');
         return;
@@ -929,12 +1016,12 @@ async function startJobRun(isFresh = true) {
     await initializeDatabase();
     await queryDB('TRUNCATE TABLE dicev2_live_queue, dicev2_master_backlog');
 
-    // 1. Fetch valid jobs < 12 hours old
+    // 1. Fetch valid jobs < 24 hours old
     const rawJobs = await queryDB(`
         SELECT d.url, d.applywizz_id, d.title as job_name, d.company, c.company_email as email_id
         FROM dice_scraped_jobs d
         JOIN clients_additional_info c ON d.applywizz_id = c.applywizz_id
-        WHERE d.scraped_at > NOW() - INTERVAL '12 hours'
+        WHERE d.scraped_at > NOW() - INTERVAL '24 hours'
           AND NOT EXISTS (
               SELECT 1 FROM dicev2_applied_jobs a 
               WHERE a.url = d.url AND a.applywizz_id = d.applywizz_id
@@ -955,8 +1042,8 @@ async function startJobRun(isFresh = true) {
     
     let jobIdCounter = 1;
     for (const row of rawJobs) {
-        // Skip clients who have already reached their 10 completed jobs cap
-        if ((clientSuccessCounts[row.applywizz_id] || 0) >= 10) continue;
+        const todayCount = await getTodayClientCompletedCount(row.applywizz_id);
+        if (todayCount >= 10) continue;
 
         const client = precheckedClients.find(c => c.applywizz_id === row.applywizz_id);
         masterBacklog.push({
@@ -976,9 +1063,6 @@ async function startJobRun(isFresh = true) {
     // 3. Initialize the Dashboard (Exactly 1 job per unique user)
     const uniqueUsers = [...new Set(masterBacklog.map(j => j.applywizz_id))];
     for (const uid of uniqueUsers) {
-        // Double check safeguard
-        if ((clientSuccessCounts[uid] || 0) >= 10) continue;
-
         const nextIdx = masterBacklog.findIndex(j => j.applywizz_id === uid);
         if (nextIdx !== -1) {
             const job = masterBacklog.splice(nextIdx, 1)[0];
@@ -991,11 +1075,146 @@ async function startJobRun(isFresh = true) {
     startCooldownEngine();
 
     sysLog('Launching global Chromium browser...');
-    const isHeadless = process.env.HEADLESS !== 'false'; // Default true for Railway server
+    const isHeadless = process.env.HEADLESS !== 'false';
     globalBrowser = await chromium.launch({ headless: isHeadless });
     
     sysLog('Starting Queue Manager...');
     checkQueue();
+}
+
+async function pollClientStatusApi() {
+    const apiUrl = process.env.CLIENT_STATUS_API_URL;
+    if (!apiUrl) return;
+
+    try {
+        const now = new Date();
+        const currentUtcHour = now.getUTCHours();
+        let cronHour = 4;
+        if (process.env.CRON_SCHEDULE) {
+            const parts = process.env.CRON_SCHEDULE.trim().split(/\s+/);
+            if (parts.length >= 2 && !isNaN(parseInt(parts[1], 10))) {
+                cronHour = parseInt(parts[1], 10);
+            }
+        }
+        const windowStartHour = (cronHour - 6 + 24) % 24;
+        const inWindow = windowStartHour > cronHour 
+            ? (currentUtcHour >= windowStartHour || currentUtcHour < cronHour)
+            : (currentUtcHour >= windowStartHour && currentUtcHour < cronHour);
+
+        if (!inWindow && !isRunActive) {
+            return;
+        }
+
+        sysLog(`[STATUS-POLLER] Checking client status API: ${apiUrl}...`);
+        const response = await fetch(apiUrl);
+        if (!response.ok) {
+            sysLog(`[STATUS-POLLER] API returned HTTP ${response.status}`);
+            return;
+        }
+
+        const data = await response.json();
+        const clientList = data.clients || (Array.isArray(data) ? data : []);
+        if (!Array.isArray(clientList) || clientList.length === 0) return;
+
+        const completedClients = clientList.filter(item => 
+            item.applywizz_id && 
+            item.status && 
+            item.status.trim().toLowerCase() === 'completed'
+        );
+
+        if (completedClients.length === 0) return;
+
+        const existingRecords = await queryDB('SELECT applywizz_id FROM trigger_client');
+        const triggeredSet = new Set(existingRecords.map(r => r.applywizz_id));
+
+        const newlyCompleted = completedClients.filter(c => !triggeredSet.has(c.applywizz_id));
+        if (newlyCompleted.length === 0) return;
+
+        sysLog(`[STATUS-POLLER] Found ${newlyCompleted.length} new completed client(s): ${newlyCompleted.map(c=>c.applywizz_id).join(', ')}`);
+
+        let newlyAddedJobsCount = 0;
+        for (const clientItem of newlyCompleted) {
+            const uid = clientItem.applywizz_id;
+            const todayCount = await getTodayClientCompletedCount(uid);
+            if (todayCount >= 10) {
+                sysLog(`[STATUS-POLLER] Client ${uid} already completed ${todayCount} jobs today (cap reached). Skipping.`);
+                await queryDB('INSERT INTO trigger_client (applywizz_id, status) VALUES ($1, $2) ON CONFLICT (applywizz_id) DO NOTHING', [uid, 'capped']);
+                continue;
+            }
+
+            await queryDB('INSERT INTO trigger_client (applywizz_id, status) VALUES ($1, $2) ON CONFLICT (applywizz_id) DO UPDATE SET status = EXCLUDED.status', [uid, clientItem.status]);
+
+            const jobs = await queryDB(`
+                SELECT d.url, d.applywizz_id, d.title as job_name, d.company, c.company_email as email_id
+                FROM dice_scraped_jobs d
+                JOIN clients_additional_info c ON d.applywizz_id = c.applywizz_id
+                WHERE d.applywizz_id = $1
+                  AND d.scraped_at > NOW() - INTERVAL '24 hours'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM dicev2_applied_jobs a 
+                      WHERE a.url = d.url AND a.applywizz_id = d.applywizz_id
+                  );
+            `, [uid]);
+
+            if (jobs.length === 0) continue;
+
+            const existingUrls = new Set([...jobQueue.map(j => j.url), ...masterBacklog.map(j => j.url)]);
+            const freshJobs = jobs.filter(j => !existingUrls.has(j.url));
+            if (freshJobs.length === 0) continue;
+
+            const prechecked = await precheckZohoConnections([{ email_id: freshJobs[0].email_id, applywizz_id: uid }]);
+            const zohoConn = prechecked[0]?.zoho_connected || false;
+
+            let maxId = Math.max(0, ...jobQueue.map(j => j.id || 0), ...masterBacklog.map(j => j.id || 0));
+            for (const j of freshJobs) {
+                masterBacklog.push({
+                    id: ++maxId,
+                    applywizz_id: uid,
+                    email_id: j.email_id,
+                    zoho_connected: zohoConn,
+                    url: j.url,
+                    job_name: j.job_name,
+                    company: j.company,
+                    status: 'PENDING',
+                    cooldown_until: '',
+                    cooldown_until_ms: 0
+                });
+            }
+
+            const hasInQueue = jobQueue.some(j => j.applywizz_id === uid);
+            if (!hasInQueue) {
+                const nextIdx = masterBacklog.findIndex(j => j.applywizz_id === uid);
+                if (nextIdx !== -1) {
+                    jobQueue.push(masterBacklog.splice(nextIdx, 1)[0]);
+                }
+            }
+
+            newlyAddedJobsCount += freshJobs.length;
+        }
+
+        if (newlyAddedJobsCount > 0) {
+            await syncMasterBacklog();
+            await syncLiveQueue();
+
+            isRunActive = true;
+            isBrowserIdleClosed = false;
+            consecutiveEmptyPolls = 0;
+
+            if (!globalBrowser) {
+                sysLog('[STATUS-POLLER] Launching Chromium browser for triggered clients...');
+                const isHeadless = process.env.HEADLESS !== 'false';
+                globalBrowser = await chromium.launch({ headless: isHeadless });
+            }
+
+            if (!cooldownTimer) startCooldownEngine();
+            if (!backlogPollerInterval) backlogPollerInterval = setInterval(pollAndIngestNewJobs, 30 * 60 * 1000);
+
+            checkQueue();
+            sysLog(`[STATUS-POLLER] Successfully queued ${newlyAddedJobsCount} jobs. Active queue size: ${jobQueue.length}, Backlog: ${masterBacklog.length}`);
+        }
+    } catch (err) {
+        sysLog(`[STATUS-POLLER] Error: ${err.message}`);
+    }
 }
 
 // --- EXPRESS DASHBOARD SERVER ---
@@ -1066,7 +1285,8 @@ app.get('/api/stats', async (req, res) => {
                     SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END) as completed_count,
                     SUM(CASE WHEN status = 'Completed' AND (reason ILIKE '%zoho%' OR (reason IS NOT NULL AND reason != '')) THEN 1 ELSE 0 END) as zoho_skipped_count,
                     SUM(CASE WHEN status = 'Completed' AND (reason IS NULL OR reason = '') THEN 1 ELSE 0 END) as clean_completed_count,
-                    SUM(CASE WHEN status = 'Failed' THEN 1 ELSE 0 END) as failed_count
+                    SUM(CASE WHEN status = 'Failed' AND (reason ILIKE '%no_apply_button%' OR reason ILIKE '%no apply button%') THEN 1 ELSE 0 END) as preflight_failed_count,
+                    SUM(CASE WHEN status = 'Failed' AND (reason NOT ILIKE '%no_apply_button%' AND reason NOT ILIKE '%no apply button%' OR reason IS NULL) THEN 1 ELSE 0 END) as failed_count
                 FROM dicev2_applied_jobs
                 ${timeFilter}
                 GROUP BY applywizz_id
@@ -1077,6 +1297,7 @@ app.get('/api/stats', async (req, res) => {
                 COALESCE(j.completed_count, 0) as completed_count,
                 COALESCE(j.zoho_skipped_count, 0) as zoho_skipped_count,
                 COALESCE(j.clean_completed_count, 0) as clean_completed_count,
+                COALESCE(j.preflight_failed_count, 0) as preflight_failed_count,
                 COALESCE(j.failed_count, 0) as failed_count
             FROM clients_additional_info c
             FULL OUTER JOIN client_jobs j ON c.applywizz_id = j.applywizz_id
@@ -1091,7 +1312,8 @@ app.get('/api/stats', async (req, res) => {
                 COALESCE(SUM(CASE WHEN status = 'Completed' THEN 1 ELSE 0 END), 0) as total_completed,
                 COALESCE(SUM(CASE WHEN status = 'Completed' AND (reason ILIKE '%zoho%' OR (reason IS NOT NULL AND reason != '')) THEN 1 ELSE 0 END), 0) as completed_zoho_skipped,
                 COALESCE(SUM(CASE WHEN status = 'Completed' AND (reason IS NULL OR reason = '') THEN 1 ELSE 0 END), 0) as properly_completed,
-                COALESCE(SUM(CASE WHEN status = 'Failed' THEN 1 ELSE 0 END), 0) as total_failed
+                COALESCE(SUM(CASE WHEN status = 'Failed' AND (reason ILIKE '%no_apply_button%' OR reason ILIKE '%no apply button%') THEN 1 ELSE 0 END), 0) as total_preflight_failed,
+                COALESCE(SUM(CASE WHEN status = 'Failed' AND (reason NOT ILIKE '%no_apply_button%' AND reason NOT ILIKE '%no apply button%' OR reason IS NULL) THEN 1 ELSE 0 END), 0) as total_failed
             FROM dicev2_applied_jobs
             ${timeFilter}
         `, params);
@@ -1105,6 +1327,7 @@ app.get('/api/stats', async (req, res) => {
                 total_completed: parseInt(totalsRow.total_completed || 0, 10),
                 completed_zoho_skipped: parseInt(totalsRow.completed_zoho_skipped || 0, 10),
                 properly_completed: parseInt(totalsRow.properly_completed || 0, 10),
+                total_preflight_failed: parseInt(totalsRow.total_preflight_failed || 0, 10),
                 total_failed: parseInt(totalsRow.total_failed || 0, 10)
             },
             clients: clientsRes
@@ -1205,6 +1428,119 @@ app.post('/api/purge-client', async (req, res) => {
         });
     } catch (err) {
         sysLog(`ERROR purging client [${req.body?.applywizz_id}]: ${err.message}`);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Run single client on-demand (loads unapplied scraped jobs into masterBacklog and triggers worker)
+app.post('/api/run-client', async (req, res) => {
+    try {
+        const { applywizz_id, extend_cap } = req.body || {};
+        if (!applywizz_id) {
+            return res.status(400).json({ error: 'applywizz_id is required' });
+        }
+
+        const todayCount = await getTodayClientCompletedCount(applywizz_id);
+        if (todayCount >= 10 && !extend_cap) {
+            return res.status(400).json({ 
+                error: `Client ${applywizz_id} has already reached 10 completed applications today.`,
+                requires_confirmation: true,
+                completed_count: todayCount
+            });
+        }
+
+        // Record in trigger_client
+        await queryDB('INSERT INTO trigger_client (applywizz_id, status) VALUES ($1, $2) ON CONFLICT (applywizz_id) DO UPDATE SET status = EXCLUDED.status', [applywizz_id, 'manual_run']);
+
+        // Ingest unapplied scraped jobs from dice_scraped_jobs (last 24 hours)
+        const jobs = await queryDB(`
+            SELECT d.url, d.applywizz_id, d.title as job_name, d.company, c.company_email as email_id
+            FROM dice_scraped_jobs d
+            JOIN clients_additional_info c ON d.applywizz_id = c.applywizz_id
+            WHERE d.applywizz_id = $1
+              AND d.scraped_at > NOW() - INTERVAL '24 hours'
+              AND NOT EXISTS (
+                  SELECT 1 FROM dicev2_applied_jobs a 
+                  WHERE a.url = d.url AND a.applywizz_id = d.applywizz_id
+              );
+        `, [applywizz_id]);
+
+        if (jobs.length === 0) {
+            return res.json({ 
+                success: true, 
+                count: 0, 
+                message: `No new unapplied scraped jobs found in the last 24 hours for ${applywizz_id}.` 
+            });
+        }
+
+        // Deduplicate against active queues
+        const existingUrls = new Set([...jobQueue.map(j => j.url), ...masterBacklog.map(j => j.url)]);
+        const freshJobs = jobs.filter(j => !existingUrls.has(j.url));
+
+        if (freshJobs.length === 0) {
+            return res.json({
+                success: true,
+                count: 0,
+                message: `All ${jobs.length} jobs are already queued in the active backlog.`
+            });
+        }
+
+        // Zoho connection precheck
+        const prechecked = await precheckZohoConnections([{ email_id: freshJobs[0].email_id, applywizz_id }]);
+        const zohoConn = prechecked[0]?.zoho_connected || false;
+
+        let maxId = Math.max(0, ...jobQueue.map(j => j.id || 0), ...masterBacklog.map(j => j.id || 0));
+        for (const j of freshJobs) {
+            masterBacklog.push({
+                id: ++maxId,
+                applywizz_id,
+                email_id: j.email_id,
+                zoho_connected: zohoConn,
+                url: j.url,
+                job_name: j.job_name,
+                company: j.company,
+                status: 'PENDING',
+                cooldown_until: '',
+                cooldown_until_ms: 0
+            });
+        }
+
+        // Promote 1 job to live queue if client currently has none
+        const hasInQueue = jobQueue.some(j => j.applywizz_id === applywizz_id);
+        if (!hasInQueue) {
+            const nextIdx = masterBacklog.findIndex(j => j.applywizz_id === applywizz_id);
+            if (nextIdx !== -1) {
+                jobQueue.push(masterBacklog.splice(nextIdx, 1)[0]);
+            }
+        }
+
+        await syncMasterBacklog();
+        await syncLiveQueue();
+
+        // Wake up automation engine if idle
+        isRunActive = true;
+        isBrowserIdleClosed = false;
+        consecutiveEmptyPolls = 0;
+
+        if (!globalBrowser) {
+            sysLog(`[MANUAL-RUN] Launching Chromium browser for client ${applywizz_id}...`);
+            const isHeadless = process.env.HEADLESS !== 'false';
+            globalBrowser = await chromium.launch({ headless: isHeadless });
+        }
+
+        if (!cooldownTimer) startCooldownEngine();
+        if (!backlogPollerInterval) backlogPollerInterval = setInterval(pollAndIngestNewJobs, 30 * 60 * 1000);
+
+        checkQueue();
+
+        res.json({
+            success: true,
+            applywizz_id,
+            count: freshJobs.length,
+            message: `Successfully loaded ${freshJobs.length} jobs into queue for ${applywizz_id}!`
+        });
+    } catch (err) {
+        sysLog(`ERROR in /api/run-client: ${err.message}`);
         res.status(500).json({ error: err.message });
     }
 });
@@ -1441,6 +1777,11 @@ app.listen(PORT, '0.0.0.0', () => {
 
 // --- SERVER ENTRY POINT ---
 initializeDatabase().catch(e => console.error("DB Init Error:", e));
+
+// Start 15-minute background client status API poller
+setInterval(pollClientStatusApi, 15 * 60 * 1000);
+sysLog('Started 15-minute background client status API poller.');
+pollClientStatusApi().catch(e => sysLog(`Initial Status Poll Error: ${e.message}`));
 
 if (process.env.CRON_SCHEDULE) {
     sysLog(`Starting Railway Node-Cron Scheduler: ${process.env.CRON_SCHEDULE}`);
