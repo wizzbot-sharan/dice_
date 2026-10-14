@@ -107,19 +107,21 @@ async function syncLiveQueue() {
 
 async function syncMasterBacklog() {
     try {
-        if (masterBacklog.length === 0) {
-            await queryDB('TRUNCATE TABLE dicev2_master_backlog');
-            return;
-        }
-        const values = [];
-        const flatParams = [];
-        let counter = 1;
-        for (const j of masterBacklog) {
-            values.push(`($${counter++}, $${counter++}, $${counter++})`);
-            flatParams.push(j.applywizz_id, j.email_id, j.url);
-        }
         await queryDB('TRUNCATE TABLE dicev2_master_backlog');
-        await queryDB(`INSERT INTO dicev2_master_backlog (applywizz_id, email_id, url) VALUES ${values.join(',')}`, flatParams);
+        if (masterBacklog.length === 0) return;
+
+        const chunkSize = 500;
+        for (let i = 0; i < masterBacklog.length; i += chunkSize) {
+            const chunk = masterBacklog.slice(i, i + chunkSize);
+            const values = [];
+            const flatParams = [];
+            let counter = 1;
+            for (const j of chunk) {
+                values.push(`($${counter++}, $${counter++}, $${counter++})`);
+                flatParams.push(j.applywizz_id, j.email_id, j.url);
+            }
+            await queryDB(`INSERT INTO dicev2_master_backlog (applywizz_id, email_id, url) VALUES ${values.join(',')}`, flatParams);
+        }
     } catch (err) {
         sysLog(`Warning: Failed to sync master backlog to DB (${err.message}). Continuing.`);
     }
@@ -914,6 +916,26 @@ async function getTodayClientCompletedCount(applywizz_id) {
     }
 }
 
+async function getTodayCompletedCountsMap() {
+    try {
+        const rows = await queryDB(`
+            SELECT applywizz_id, COUNT(*) as count 
+            FROM dicev2_applied_jobs 
+            WHERE status = 'Completed' 
+              AND (time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
+            GROUP BY applywizz_id
+        `);
+        const map = new Map();
+        for (const r of rows) {
+            map.set(r.applywizz_id, parseInt(r.count, 10));
+        }
+        return map;
+    } catch (e) {
+        sysLog(`Warning: Failed to fetch today completed counts map: ${e.message}`);
+        return new Map();
+    }
+}
+
 async function startJobRun(isFresh = true) {
     const isAlreadyRunning = isRunActive || jobQueue.length > 0 || masterBacklog.length > 0;
 
@@ -950,10 +972,11 @@ async function startJobRun(isFresh = true) {
 
         const clientsToPrecheck = newJobs.map(r => ({ email_id: r.email_id, applywizz_id: r.applywizz_id }));
         const precheckedClients = await precheckZohoConnections(clientsToPrecheck);
+        const todayCountsMap = await getTodayCompletedCountsMap();
 
         let maxId = Math.max(0, ...jobQueue.map(j => j.id || 0), ...masterBacklog.map(j => j.id || 0));
         for (const row of newJobs) {
-            const todayCount = await getTodayClientCompletedCount(row.applywizz_id);
+            const todayCount = todayCountsMap.get(row.applywizz_id) || 0;
             if (todayCount >= 10) continue;
 
             const client = precheckedClients.find(c => c.applywizz_id === row.applywizz_id);
@@ -1040,9 +1063,13 @@ async function startJobRun(isFresh = true) {
     const clientsToPrecheck = rawJobs.map(r => ({ email_id: r.email_id, applywizz_id: r.applywizz_id }));
     const precheckedClients = await precheckZohoConnections(clientsToPrecheck);
     
+    // Batch query today completed counts for all clients in 1 single query
+    const todayCountsMap = await getTodayCompletedCountsMap();
+    sysLog(`Fetched today completed counts for ${todayCountsMap.size} clients in 1 batch query.`);
+
     let jobIdCounter = 1;
     for (const row of rawJobs) {
-        const todayCount = await getTodayClientCompletedCount(row.applywizz_id);
+        const todayCount = todayCountsMap.get(row.applywizz_id) || 0;
         if (todayCount >= 10) continue;
 
         const client = precheckedClients.find(c => c.applywizz_id === row.applywizz_id);
@@ -1788,6 +1815,27 @@ if (process.env.CRON_SCHEDULE) {
     cron.schedule(process.env.CRON_SCHEDULE, () => {
         startJobRun(true).catch(err => sysLog(`CRON ERROR: ${err.message}`));
     });
+
+    // Auto-resume today's run if container restarted within 4 hours after scheduled cron time
+    setTimeout(() => {
+        try {
+            const parts = process.env.CRON_SCHEDULE.trim().split(/\s+/);
+            if (parts.length >= 2) {
+                const cronMinute = parseInt(parts[0], 10);
+                const cronHour = parseInt(parts[1], 10);
+                const now = new Date();
+                const nowMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+                const cronMinutes = cronHour * 60 + cronMinute;
+
+                if (nowMinutes >= cronMinutes && nowMinutes <= (cronMinutes + 240) && !isRunActive) {
+                    sysLog(`[BOOT] Server restarted within scheduled run window (${cronHour}:${cronMinute} UTC). Auto-starting today's run...`);
+                    startJobRun(true).catch(err => sysLog(`AUTO-START ERROR: ${err.message}`));
+                }
+            }
+        } catch (e) {
+            sysLog(`Auto-start check notice: ${e.message}`);
+        }
+    }, 5000);
 } else {
     sysLog('No CRON_SCHEDULE provided. Running immediately for testing.');
     startJobRun(true).catch(err => sysLog(`RUN ERROR: ${err.message}`));
