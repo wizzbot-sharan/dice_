@@ -516,8 +516,8 @@ async function runAutomation(job) {
             job.fatalLoginError = true;
         }
     } finally {
-        await page.close();
-        await context.close();
+        if (page) await page.close().catch(() => {});
+        if (context) await context.close().catch(() => {});
         
         // Write exactly to Azure DB specifications
         try {
@@ -559,7 +559,7 @@ async function runAutomation(job) {
                     masterBacklog.splice(i, 1);
                 }
             }
-        } else {
+        } else if (isRunActive) {
             const nextJobIndex = masterBacklog.findIndex(j => j.applywizz_id === applywizz_id);
             if (nextJobIndex !== -1) {
                 const nextJob = masterBacklog.splice(nextJobIndex, 1)[0];
@@ -621,6 +621,8 @@ async function performBrowserRestart() {
 }
 
 async function checkQueue() {
+    if (!isRunActive && activeWorkers === 0) return;
+
     if (isBrowserRestarting) {
         if (activeWorkers === 0) await performBrowserRestart();
         return;
@@ -1129,9 +1131,9 @@ async function pollClientStatusApi() {
         // Calculate current IST minutes from midnight (UTC + 5 hours 30 mins)
         const istMinutes = (now.getUTCHours() * 60 + now.getUTCMinutes() + 330) % 1440;
         
-        // 10:00 AM IST = 10 * 60 = 600 minutes
-        // Only poll between 10:00 AM IST and 11:58 PM IST (or when run is active)
-        if (istMinutes < 600 && !isRunActive) {
+        // 10:00 AM IST = 10 * 60 = 600 minutes; 11:59 PM IST = 1439 minutes
+        // Only poll between 10:00 AM IST and 11:58 PM IST (complete standby overnight)
+        if (istMinutes < 600 || istMinutes >= 1439) {
             return;
         }
 
