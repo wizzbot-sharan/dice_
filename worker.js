@@ -761,6 +761,11 @@ async function pollAndIngestNewJobs() {
             ...masterBacklog.map(j => j.url)
         ]);
 
+        const todayCountsMap = await getTodayCompletedCountsMap();
+        for (const [uid, count] of todayCountsMap.entries()) {
+            clientSuccessCounts[uid] = Math.max(clientSuccessCounts[uid] || 0, count);
+        }
+
         const newJobs = [];
         for (const row of freshJobs) {
             if (existingUrls.has(row.url)) continue;
@@ -908,7 +913,7 @@ async function getTodayClientCompletedCount(applywizz_id) {
             FROM dicev2_applied_jobs 
             WHERE applywizz_id = $1 
               AND status = 'Completed' 
-              AND (time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
+              AND (time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
         `, [applywizz_id]);
         return parseInt(res[0]?.count || 0, 10);
     } catch (e) {
@@ -922,7 +927,7 @@ async function getTodayCompletedCountsMap() {
             SELECT applywizz_id, COUNT(*) as count 
             FROM dicev2_applied_jobs 
             WHERE status = 'Completed' 
-              AND (time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date
+              AND (time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
             GROUP BY applywizz_id
         `);
         const map = new Map();
@@ -973,6 +978,9 @@ async function startJobRun(isFresh = true) {
         const clientsToPrecheck = newJobs.map(r => ({ email_id: r.email_id, applywizz_id: r.applywizz_id }));
         const precheckedClients = await precheckZohoConnections(clientsToPrecheck);
         const todayCountsMap = await getTodayCompletedCountsMap();
+        for (const [uid, count] of todayCountsMap.entries()) {
+            clientSuccessCounts[uid] = Math.max(clientSuccessCounts[uid] || 0, count);
+        }
 
         let maxId = Math.max(0, ...jobQueue.map(j => j.id || 0), ...masterBacklog.map(j => j.id || 0));
         for (const row of newJobs) {
@@ -1065,6 +1073,9 @@ async function startJobRun(isFresh = true) {
     
     // Batch query today completed counts for all clients in 1 single query
     const todayCountsMap = await getTodayCompletedCountsMap();
+    for (const [uid, count] of todayCountsMap.entries()) {
+        clientSuccessCounts[uid] = Math.max(clientSuccessCounts[uid] || 0, count);
+    }
     sysLog(`Fetched today completed counts for ${todayCountsMap.size} clients in 1 batch query.`);
 
     let jobIdCounter = 1;
@@ -1115,20 +1126,12 @@ async function pollClientStatusApi() {
 
     try {
         const now = new Date();
-        const currentUtcHour = now.getUTCHours();
-        let cronHour = 4;
-        if (process.env.CRON_SCHEDULE) {
-            const parts = process.env.CRON_SCHEDULE.trim().split(/\s+/);
-            if (parts.length >= 2 && !isNaN(parseInt(parts[1], 10))) {
-                cronHour = parseInt(parts[1], 10);
-            }
-        }
-        const windowStartHour = (cronHour - 6 + 24) % 24;
-        const inWindow = windowStartHour > cronHour 
-            ? (currentUtcHour >= windowStartHour || currentUtcHour < cronHour)
-            : (currentUtcHour >= windowStartHour && currentUtcHour < cronHour);
-
-        if (!inWindow && !isRunActive) {
+        // Calculate current IST minutes from midnight (UTC + 5 hours 30 mins)
+        const istMinutes = (now.getUTCHours() * 60 + now.getUTCMinutes() + 330) % 1440;
+        
+        // 10:00 AM IST = 10 * 60 = 600 minutes
+        // Only poll between 10:00 AM IST and 11:58 PM IST (or when run is active)
+        if (istMinutes < 600 && !isRunActive) {
             return;
         }
 
@@ -1163,6 +1166,8 @@ async function pollClientStatusApi() {
         for (const clientItem of newlyCompleted) {
             const uid = clientItem.applywizz_id;
             const todayCount = await getTodayClientCompletedCount(uid);
+            clientSuccessCounts[uid] = Math.max(clientSuccessCounts[uid] || 0, todayCount);
+
             if (todayCount >= 10) {
                 sysLog(`[STATUS-POLLER] Client ${uid} already completed ${todayCount} jobs today (cap reached). Skipping.`);
                 await queryDB('INSERT INTO trigger_client (applywizz_id, status) VALUES ($1, $2) ON CONFLICT (applywizz_id) DO NOTHING', [uid, 'capped']);
@@ -1189,11 +1194,15 @@ async function pollClientStatusApi() {
             const freshJobs = jobs.filter(j => !existingUrls.has(j.url));
             if (freshJobs.length === 0) continue;
 
-            const prechecked = await precheckZohoConnections([{ email_id: freshJobs[0].email_id, applywizz_id: uid }]);
+            // Only queue up to remaining quota for today
+            const remainingQuota = 10 - todayCount;
+            const jobsToQueue = freshJobs.slice(0, remainingQuota);
+
+            const prechecked = await precheckZohoConnections([{ email_id: jobsToQueue[0].email_id, applywizz_id: uid }]);
             const zohoConn = prechecked[0]?.zoho_connected || false;
 
             let maxId = Math.max(0, ...jobQueue.map(j => j.id || 0), ...masterBacklog.map(j => j.id || 0));
-            for (const j of freshJobs) {
+            for (const j of jobsToQueue) {
                 masterBacklog.push({
                     id: ++maxId,
                     applywizz_id: uid,
@@ -1216,7 +1225,7 @@ async function pollClientStatusApi() {
                 }
             }
 
-            newlyAddedJobsCount += freshJobs.length;
+            newlyAddedJobsCount += jobsToQueue.length;
         }
 
         if (newlyAddedJobsCount > 0) {
@@ -1468,6 +1477,7 @@ app.post('/api/run-client', async (req, res) => {
         }
 
         const todayCount = await getTodayClientCompletedCount(applywizz_id);
+        clientSuccessCounts[applywizz_id] = Math.max(clientSuccessCounts[applywizz_id] || 0, todayCount);
         if (todayCount >= 10 && !extend_cap) {
             return res.status(400).json({ 
                 error: `Client ${applywizz_id} has already reached 10 completed applications today.`,
@@ -1502,7 +1512,9 @@ app.post('/api/run-client', async (req, res) => {
 
         // Deduplicate against active queues
         const existingUrls = new Set([...jobQueue.map(j => j.url), ...masterBacklog.map(j => j.url)]);
-        const freshJobs = jobs.filter(j => !existingUrls.has(j.url));
+        const unqueuedJobs = jobs.filter(j => !existingUrls.has(j.url));
+        const remainingQuota = extend_cap ? unqueuedJobs.length : Math.max(1, 10 - todayCount);
+        const freshJobs = unqueuedJobs.slice(0, remainingQuota);
 
         if (freshJobs.length === 0) {
             return res.json({
@@ -1809,6 +1821,19 @@ initializeDatabase().catch(e => console.error("DB Init Error:", e));
 setInterval(pollClientStatusApi, 15 * 60 * 1000);
 sysLog('Started 15-minute background client status API poller.');
 pollClientStatusApi().catch(e => sysLog(`Initial Status Poll Error: ${e.message}`));
+// Schedule Daily Hard Stop at 11:59 PM IST (Asia/Kolkata)
+cron.schedule('59 23 * * *', async () => {
+    sysLog('=== DAILY HARD CUTOFF: 11:59 PM IST REACHED ===');
+    sysLog('Terminating active automation, closing browser, and clearing queues for the night.');
+    jobQueue = [];
+    masterBacklog = [];
+    await syncLiveQueue();
+    await syncMasterBacklog();
+    await terminateJobRun('Daily 11:59 PM IST Hard Stop.');
+}, {
+    timezone: 'Asia/Kolkata'
+});
+sysLog('Scheduled Daily Hard Stop at 11:59 PM IST.');
 
 if (process.env.CRON_SCHEDULE) {
     sysLog(`Starting Railway Node-Cron Scheduler: ${process.env.CRON_SCHEDULE}`);
