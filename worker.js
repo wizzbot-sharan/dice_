@@ -722,6 +722,7 @@ async function terminateJobRun(reason) {
     
     activeUsers.clear();
     clientSuccessCounts = {};
+    purgedClientsToday.clear();
     fatalLoginClients.clear();
     jobsProcessedSinceRestart = 0;
     isBrowserRestarting = false;
@@ -752,6 +753,7 @@ async function pollAndIngestNewJobs() {
             FROM dice_scraped_jobs d
             JOIN clients_additional_info c ON d.applywizz_id = c.applywizz_id
             WHERE d.scraped_at > NOW() - INTERVAL '12 hours'
+              AND d.applywizz_id NOT IN (SELECT applywizz_id FROM trigger_client WHERE status = 'purged')
               AND NOT EXISTS (
                   SELECT 1 FROM dicev2_applied_jobs a 
                   WHERE a.url = d.url AND a.applywizz_id = d.applywizz_id
@@ -771,6 +773,7 @@ async function pollAndIngestNewJobs() {
         const newJobs = [];
         for (const row of freshJobs) {
             if (existingUrls.has(row.url)) continue;
+            if (purgedClientsToday.has(row.applywizz_id)) continue;
             if ((clientSuccessCounts[row.applywizz_id] || 0) >= 10) continue;
             if (fatalLoginClients.has(row.applywizz_id)) continue;
             
@@ -904,9 +907,22 @@ async function initializeDatabase() {
             triggered_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
         );
     `);
+
+    try {
+        const purgedRows = await queryDB("SELECT applywizz_id FROM trigger_client WHERE status = 'purged'");
+        for (const r of purgedRows) {
+            purgedClientsToday.add(r.applywizz_id);
+        }
+        if (purgedClientsToday.size > 0) {
+            sysLog(`Loaded ${purgedClientsToday.size} previously purged client(s) into memory: ${Array.from(purgedClientsToday).join(', ')}`);
+        }
+    } catch (e) {
+        sysLog(`Warning: Failed to load purged clients on startup: ${e.message}`);
+    }
 }
 
 let clientSuccessCounts = {};
+const purgedClientsToday = new Set();
 
 async function getTodayClientCompletedCount(applywizz_id) {
     try {
@@ -1424,10 +1440,13 @@ app.post('/api/purge-client', async (req, res) => {
             return res.status(400).json({ error: 'applywizz_id is required' });
         }
 
+        // 1. Mark in memory immediately
+        purgedClientsToday.add(applywizz_id);
+
         let clearedRamBacklog = 0;
         let clearedRamQueue = 0;
 
-        // 1. Purge from RAM masterBacklog
+        // 2. Purge from RAM masterBacklog
         for (let i = masterBacklog.length - 1; i >= 0; i--) {
             if (masterBacklog[i].applywizz_id === applywizz_id) {
                 masterBacklog.splice(i, 1);
@@ -1435,7 +1454,7 @@ app.post('/api/purge-client', async (req, res) => {
             }
         }
 
-        // 2. Purge from RAM jobQueue (only PENDING or COOLDOWN, leave PROCESSING to finish gracefully)
+        // 3. Purge from RAM jobQueue (only PENDING or COOLDOWN, leave PROCESSING to finish gracefully)
         for (let i = jobQueue.length - 1; i >= 0; i--) {
             if (jobQueue[i].applywizz_id === applywizz_id) {
                 if (jobQueue[i].status !== 'PROCESSING') {
@@ -1445,16 +1464,23 @@ app.post('/api/purge-client', async (req, res) => {
             }
         }
 
-        // 3. Purge from PostgreSQL Database tables
+        // 4. Purge from PostgreSQL Database tables
         await queryDB('DELETE FROM dicev2_master_backlog WHERE applywizz_id = $1', [applywizz_id]);
         await queryDB("DELETE FROM dicev2_live_queue WHERE applywizz_id = $1 AND status != 'PROCESSING'", [applywizz_id]);
 
-        // 4. Synchronize DB tables with RAM state
+        // 5. Persist 'purged' marker into trigger_client
+        await queryDB(`
+            INSERT INTO trigger_client (applywizz_id, status) 
+            VALUES ($1, 'purged') 
+            ON CONFLICT (applywizz_id) DO UPDATE SET status = 'purged'
+        `, [applywizz_id]);
+
+        // 6. Synchronize DB tables with RAM state
         await syncLiveQueue();
         await syncMasterBacklog();
 
         const totalCleared = clearedRamBacklog + clearedRamQueue;
-        sysLog(`Purged client [${applywizz_id}] from active run queues. Cleared ${clearedRamBacklog} backlog & ${clearedRamQueue} queued jobs.`);
+        sysLog(`Purged client [${applywizz_id}] from active run queues & marked as purged in trigger_client. Cleared ${clearedRamBacklog} backlog & ${clearedRamQueue} queued jobs.`);
 
         res.json({
             success: true,
@@ -1487,6 +1513,9 @@ app.post('/api/run-client', async (req, res) => {
                 completed_count: todayCount
             });
         }
+
+        // Un-purge in memory if previously purged
+        purgedClientsToday.delete(applywizz_id);
 
         // Record in trigger_client
         await queryDB('INSERT INTO trigger_client (applywizz_id, status) VALUES ($1, $2) ON CONFLICT (applywizz_id) DO UPDATE SET status = EXCLUDED.status', [applywizz_id, 'manual_run']);
