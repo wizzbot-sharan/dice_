@@ -552,13 +552,34 @@ async function runAutomation(job) {
                 }
             }
         } else if (job.fatalLoginError) {
+            log(applywizz_id, `Fatal Login Error detected! Purging client for the day across RAM and DB.`);
+
+            // 1. In-memory exclusions
+            purgedClientsToday.add(applywizz_id);
             fatalLoginClients.add(applywizz_id);
-            log(applywizz_id, `Fatal Login Error detected! Dropping all remaining jobs for this client to save resources.`);
+
+            // 2. Drop from RAM masterBacklog
             for (let i = masterBacklog.length - 1; i >= 0; i--) {
                 if (masterBacklog[i].applywizz_id === applywizz_id) {
                     masterBacklog.splice(i, 1);
                 }
             }
+
+            // 3. Drop any remaining jobs from RAM jobQueue
+            for (let i = jobQueue.length - 1; i >= 0; i--) {
+                if (jobQueue[i].applywizz_id === applywizz_id) {
+                    jobQueue.splice(i, 1);
+                }
+            }
+
+            // 4. Persist 'purged' status and delete from DB tables
+            await queryDB('DELETE FROM dicev2_master_backlog WHERE applywizz_id = $1', [applywizz_id]).catch(()=>{});
+            await queryDB("DELETE FROM dicev2_live_queue WHERE applywizz_id = $1 AND status != 'PROCESSING'", [applywizz_id]).catch(()=>{});
+            await queryDB(`
+                INSERT INTO trigger_client (applywizz_id, status) 
+                VALUES ($1, 'purged') 
+                ON CONFLICT (applywizz_id) DO UPDATE SET status = 'purged'
+            `, [applywizz_id]).catch(()=>{});
         } else if (isRunActive) {
             const nextJobIndex = masterBacklog.findIndex(j => j.applywizz_id === applywizz_id);
             if (nextJobIndex !== -1) {
