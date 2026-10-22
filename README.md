@@ -16,10 +16,9 @@ An autonomous, multi-client job application engine built with Node.js, Playwrigh
 - [Part 2: Developer & Technical Guide](#part-2-developer--technical-guide)
   - [1. Technology Stack](#1-technology-stack)
   - [2. System Architecture & Components](#2-system-architecture--components)
-  - [3. Environment Variables Reference](#3-environment-variables-reference)
-  - [4. Local Setup & Execution](#4-local-setup--execution)
-  - [5. Docker & Railway Deployment](#5-docker--railway-deployment)
-  - [6. API Endpoints Reference](#6-api-endpoints-reference)
+  - [3. Local Setup & Execution](#3-local-setup--execution)
+  - [4. Docker & Railway Deployment](#4-docker--railway-deployment)
+  - [5. API Endpoints Reference](#5-api-endpoints-reference)
 
 ---
 
@@ -103,8 +102,8 @@ The service hosts an interactive web dashboard providing operational visibility:
 - **Runtime:** Node.js (v20+ with `--expose-gc` flag for Playwright memory management)
 - **Web Server:** Express.js (serving REST API and static React build)
 - **Browser Automation:** Playwright with Chromium (stealth args, randomized user agents, headless toggle)
-- **Database:** PostgreSQL (Azure-hosted with `pg` connection pool)
-- **Object Storage:** AWS S3 / Supabase storage for application submission screenshots
+- **Database:** PostgreSQL (with `pg` connection pool)
+- **Object Storage:** Object storage service for application submission screenshots
 - **Scheduler:** `node-cron` for IST daily timetable triggers
 - **Frontend:** React + Vite (compiled into `public/`)
 
@@ -142,32 +141,11 @@ The service hosts an interactive web dashboard providing operational visibility:
 
 ---
 
-### 3. Environment Variables Reference
-
-Create a `.env` file in the project root:
-
-| Variable | Description | Example / Default |
-| :--- | :--- | :--- |
-| `DATABASE_URL` | PostgreSQL connection string | `postgres://user:pass@host:5432/dbname?sslmode=require` |
-| `CLIENT_STATUS_API_URL` | Endpoint to fetch completed candidate list | `https://api.example.com/clients` |
-| `PORT` | Port for Express server & dashboard | `3000` |
-| `HEADLESS` | Run Playwright in headless mode | `true` |
-| `CRON_SCHEDULE` | Cron pattern for scheduled kickoff | `0 17 * * *` (5:00 PM IST) |
-| `AWS_ACCESS_KEY_ID` | Storage access key for screenshots | `your-access-key` |
-| `AWS_SECRET_ACCESS_KEY` | Storage secret key for screenshots | `your-secret-key` |
-| `AWS_REGION` | S3 / Supabase region | `us-east-1` |
-| `AWS_BUCKET_NAME` | Bucket name for screenshots | `application-proofs` |
-| `AWS_S3_BASE_PATH` | Base public URL prefix for uploaded images | `https://bucket.s3.amazonaws.com` |
-| `DASHBOARD_USERNAME` | Basic Auth username for web dashboard | `admin` |
-| `DASHBOARD_PASSWORD` | Basic Auth password for web dashboard | `password` |
-
----
-
-### 4. Local Setup & Execution
+### 3. Local Setup & Execution
 
 #### Prerequisites
 - Node.js 20 or higher
-- Access to the target PostgreSQL database
+- Database connectivity
 - Playwright system dependencies
 
 #### 1. Clone & Install Dependencies
@@ -200,11 +178,11 @@ npx playwright install chromium
 node --expose-gc worker.js
 ```
 
-Access the dashboard at `http://localhost:3000`.
+Access the dashboard at the configured port.
 
 ---
 
-### 5. Docker & Railway Deployment
+### 4. Docker & Railway Deployment
 
 The repository includes a multi-stage `Dockerfile`:
 - **Stage 1 (`frontend-builder`):** Compiles the React dashboard using `node:20-alpine`.
@@ -216,18 +194,18 @@ The repository includes a multi-stage `Dockerfile`:
 docker build -t dice-automation .
 
 # Run container
-docker run -p 3000:3000 --env-file .env dice-automation
+docker run -p 3000:3000 dice-automation
 ```
 
 #### Railway Deployment
 1. Connect this GitHub repository to your Railway project.
 2. Railway automatically detects the root `Dockerfile`.
-3. In Railway settings, add all required variables from the [Environment Variables Reference](#3-environment-variables-reference).
-4. Expose port `3000` (or Railway's dynamic `$PORT`).
+3. Configure the necessary environment variables in the Railway dashboard.
+4. Expose the application port.
 
 ---
 
-### 6. API Endpoints Reference
+### 5. API Endpoints Reference
 
 | Method | Endpoint | Description |
 | :--- | :--- | :--- |
