@@ -46,7 +46,8 @@ import {
   Eye,
   ZoomIn,
   ZoomOut,
-  Globe
+  Globe,
+  Archive
 } from 'lucide-react';
 
 function App() {
@@ -170,6 +171,7 @@ function App() {
   // Action Loading States
   const [isTriggering, setIsTriggering] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isArchiving, setIsArchiving] = useState(false);
 
   // --- AUTHENTICATION ---
   const handleLogin = async (e) => {
@@ -461,6 +463,37 @@ function App() {
       }
     } catch (err) {
       alert('Network error while purging queue.');
+    }
+  };
+
+  const archiveOldJobs = async () => {
+    try {
+      const sumRes = await fetch('/api/archive-summary');
+      const sumData = await sumRes.json();
+      const count = sumData.countOlderThan24h || 0;
+
+      if (count === 0) {
+        alert("ARCHIVE SCRAPED JOBS:\n\nThere are currently 0 scraped jobs older than 24 hours to archive.");
+        return;
+      }
+
+      const confirmMsg = `ARCHIVE SCRAPED JOBS:\n\nFound ${count.toLocaleString()} scraped jobs older than 24 hours.\n\nDo you want to transfer these jobs to 'dice_archived_jobs' and delete them from 'dice_scraped_jobs'?\n\nThis will free up database space and keep table queries fast.`;
+      if (!window.confirm(confirmMsg)) return;
+
+      setIsArchiving(true);
+      const res = await fetch('/api/archive-scraped-jobs', { method: 'POST' });
+      const data = await res.json();
+
+      if (res.ok) {
+        alert(`Archive Complete!\n\nSuccessfully moved ${data.archived_count?.toLocaleString() || count} jobs to dice_archived_jobs in ${data.duration_seconds || 'a few'}s.`);
+        fetchStats();
+      } else {
+        alert(`Archive Failed: ${data.error || 'Server error occurred.'}`);
+      }
+    } catch (err) {
+      alert(`Network error during archive: ${err.message}`);
+    } finally {
+      setIsArchiving(false);
     }
   };
 
@@ -783,6 +816,17 @@ function App() {
             >
               <X className="w-3.5 h-3.5" />
               <span>Purge Queue</span>
+            </button>
+
+            {/* Archive Old Scraped Jobs */}
+            <button
+              onClick={archiveOldJobs}
+              disabled={isArchiving}
+              className="px-3 py-1.5 bg-amber-950/40 hover:bg-amber-900/50 active:bg-amber-950/70 text-amber-300 border border-amber-800/60 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer shadow-sm"
+              title="Archive scraped jobs older than 24 hours"
+            >
+              <Archive className={`w-3.5 h-3.5 ${isArchiving ? 'animate-spin text-amber-200' : 'text-amber-400'}`} />
+              <span>{isArchiving ? 'Archiving...' : 'Archive Old Jobs'}</span>
             </button>
 
             {/* Date Range Modal Trigger */}

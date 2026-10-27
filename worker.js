@@ -39,7 +39,7 @@ if (!fs.existsSync(sessionsDir)) {
 
 // --- STATE & QUEUE MANAGEMENT ---
 let masterBacklog = [];
-let jobQueue = []; 
+let jobQueue = [];
 let activeUsers = new Set();
 let activeWorkers = 0;
 const MAX_WORKERS = 10;
@@ -53,20 +53,21 @@ let backlogPollerInterval = null;
 let consecutiveEmptyPolls = 0;
 let fatalLoginClients = new Set();
 let isRunActive = false;
+let isArchivingInProgress = false;
 
 // --- LOGGING HELPERS ---
 function sysLog(msg) {
     const text = `[SYSTEM] ${msg}`;
     console.log(text);
     if (process.env.DATABASE_URL) {
-        queryDB('INSERT INTO dicev2_logs (applywizz_id, message) VALUES ($1, $2)', ['SYSTEM', text]).catch(() => {});
+        queryDB('INSERT INTO dicev2_logs (applywizz_id, message) VALUES ($1, $2)', ['SYSTEM', text]).catch(() => { });
     }
 }
 function log(applywizz_id, msg) {
     const text = `[${applywizz_id}] ${msg}`;
     console.log(text);
     if (process.env.DATABASE_URL) {
-        queryDB('INSERT INTO dicev2_logs (applywizz_id, message) VALUES ($1, $2)', [applywizz_id, text]).catch(() => {});
+        queryDB('INSERT INTO dicev2_logs (applywizz_id, message) VALUES ($1, $2)', [applywizz_id, text]).catch(() => { });
     }
 }
 
@@ -153,19 +154,116 @@ function extractCleanText(html) {
     text = text.replace(/<\/div>|<\/p>|<\/tr>|<\/h[1-6]>/gi, '\n');
     text = text.replace(/<[^>]*>?/gm, '');
     text = text.replace(/&nbsp;/g, ' ')
-               .replace(/&amp;/g, '&')
-               .replace(/&lt;/g, '<')
-               .replace(/&gt;/g, '>');
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>');
     text = text.replace(/\n\s*\n/g, '\n\n').trim();
     return text;
 }
 
+// --- TIME & SCHEDULE HELPERS ---
+function isScheduledDay(date = new Date()) {
+    const cronExpr = process.env.CRON_SCHEDULE;
+    if (!cronExpr) return true;
+    try {
+        const parsed = cron.parse(cronExpr);
+        const istDate = new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+        const istDay = istDate.getDay(); // 0 is Sunday, 1 is Monday ... 6 is Saturday
+        return parsed.dayOfWeek.includes(istDay) || (istDay === 0 && parsed.dayOfWeek.includes(7));
+    } catch (e) {
+        return true;
+    }
+}
+
+function getIstMinutes(date = new Date()) {
+    return (date.getUTCHours() * 60 + date.getUTCMinutes() + 330) % 1440;
+}
+
+function isWithinOperatingHours(date = new Date()) {
+    if (!isScheduledDay(date)) return false;
+    const minutes = getIstMinutes(date);
+    // 10:00 AM IST = 600 minutes; 11:59 PM IST = 1439 minutes
+    return minutes >= 600 && minutes < 1439;
+}
+
+function isWithinStatusPollerHours(date = new Date()) {
+    if (!isScheduledDay(date)) return false;
+    const minutes = getIstMinutes(date);
+    // 10:00 AM IST (600) to 11:00 PM IST (1380) strictly
+    return minutes >= 600 && minutes < 1380;
+}
+
+function cleanCompanyName(company) {
+    if (!company) return '';
+    return company
+        .replace(/\b(llp|llc|inc|corp|corporation|technologies|technology|tech|pvt|ltd|limited|services|group|holdings|solutions)\b/gi, '')
+        .replace(/[^a-zA-Z0-9\s]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .toLowerCase();
+}
+
+// --- ZOHO CONCURRENCY & RETRY HELPERS ---
+class ZohoConcurrencyLimiter {
+    constructor(maxConcurrent = 2) {
+        this.maxConcurrent = maxConcurrent;
+        this.currentRunning = 0;
+        this.queue = [];
+    }
+
+    async acquire() {
+        if (this.currentRunning < this.maxConcurrent) {
+            this.currentRunning++;
+            return;
+        }
+        await new Promise(resolve => this.queue.push(resolve));
+        this.currentRunning++;
+    }
+
+    release() {
+        this.currentRunning--;
+        if (this.queue.length > 0) {
+            const next = this.queue.shift();
+            next();
+        }
+    }
+}
+const zohoLimiter = new ZohoConcurrencyLimiter(2);
+
+async function fetchZohoWithWaitAndRetry(url, maxRetries = 3) {
+    await zohoLimiter.acquire();
+    try {
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                const res = await fetch(url);
+                if (res.status >= 500 && attempt < maxRetries) {
+                    const waitMs = attempt * 5000;
+                    sysLog(`[ZOHO-API] Received HTTP ${res.status}. Waiting ${waitMs / 1000}s before retry (Attempt ${attempt}/${maxRetries})...`);
+                    await new Promise(r => setTimeout(r, waitMs));
+                    continue;
+                }
+                return res;
+            } catch (err) {
+                if (attempt < maxRetries) {
+                    const waitMs = attempt * 5000;
+                    sysLog(`[ZOHO-API] Network error (${err.message}). Waiting ${waitMs / 1000}s before retry...`);
+                    await new Promise(r => setTimeout(r, waitMs));
+                    continue;
+                }
+                throw err;
+            }
+        }
+    } finally {
+        zohoLimiter.release();
+    }
+}
+
 // --- ZOHO LOGIC ---
-async function precheckZohoConnections(clientsArray) {
-    sysLog('Running Zoho API Pre-Check...');
+async function precheckZohoConnections(clientsArray, attempt = 1) {
+    sysLog(`Running Zoho API Pre-Check (Attempt ${attempt}/2)...`);
     let apiUsers = [];
     const controller = new AbortController();
-    const timeout = setTimeout(() => { controller.abort(); }, 60000);
+    const timeout = setTimeout(() => { controller.abort(); }, 150000); // 150s cold-boot timeout
     try {
         const res = await fetch('https://zoho-mail-reader.onrender.com/api/zoho/ui/users', { signal: controller.signal });
         clearTimeout(timeout);
@@ -175,39 +273,79 @@ async function precheckZohoConnections(clientsArray) {
         sysLog(`Fetched ${apiUsers.length} users from Zoho API.`);
     } catch (err) {
         clearTimeout(timeout);
+        if (attempt === 1) {
+            sysLog(`Zoho Pre-Check attempt 1 failed (${err.message}). Waiting 5s before retry...`);
+            await new Promise(r => setTimeout(r, 5000));
+            return precheckZohoConnections(clientsArray, 2);
+        }
         sysLog(`ERROR during Zoho Pre-Check: ${err.message}. Defaulting all to unconnected.`);
     }
 
     // Process unique users only
     const uniqueClients = [];
     const seenEmails = new Set();
-    
+
     for (const client of clientsArray) {
         if (!client || !client.email_id) continue;
         if (seenEmails.has(client.email_id)) continue;
         seenEmails.add(client.email_id);
-        
+
         try {
             const apiUser = apiUsers.find(u => u.email && u.email.toLowerCase() === client.email_id.trim().toLowerCase());
             client.zoho_connected = apiUser ? (apiUser.connected === true) : false;
             uniqueClients.push(client);
-        } catch(e) {
+        } catch (e) {
             sysLog(`Error matching client ${client.email_id}: ${e.message}`);
         }
     }
-    
+
     sysLog(`Zoho precheck finished processing ${uniqueClients.length} unique clients.`);
     return uniqueClients;
+}
+
+async function refreshDisconnectedZohoClients() {
+    try {
+        const disconnectedClients = [];
+        const checkedEmails = new Set();
+        for (const j of [...jobQueue, ...masterBacklog]) {
+            if (!j.zoho_connected && j.email_id && !checkedEmails.has(j.email_id)) {
+                checkedEmails.add(j.email_id);
+                disconnectedClients.push({ email_id: j.email_id, applywizz_id: j.applywizz_id });
+            }
+        }
+
+        if (disconnectedClients.length === 0) return;
+
+        sysLog(`[ZOHO-3HR] Re-checking Zoho status for ${disconnectedClients.length} currently disconnected client(s)...`);
+        const prechecked = await precheckZohoConnections(disconnectedClients);
+        let reconnectedCount = 0;
+
+        for (const c of prechecked) {
+            if (c.zoho_connected) {
+                reconnectedCount++;
+                for (const j of jobQueue) {
+                    if (j.applywizz_id === c.applywizz_id) j.zoho_connected = true;
+                }
+                for (const j of masterBacklog) {
+                    if (j.applywizz_id === c.applywizz_id) j.zoho_connected = true;
+                }
+                sysLog(`[ZOHO-3HR] Client ${c.applywizz_id} (${c.email_id}) is now CONNECTED in Zoho. Future jobs will poll Zoho.`);
+            }
+        }
+        sysLog(`[ZOHO-3HR] Re-check finished. ${reconnectedCount} client(s) updated to connected.`);
+    } catch (e) {
+        sysLog(`[ZOHO-3HR] Error refreshing disconnected clients: ${e.message}`);
+    }
 }
 
 async function fetchMessageDetails(email_id, accountId, msg) {
     const folderId = msg.folderId;
     const messageId = msg.messageId;
-    
+
     const messageUrl = `https://zoho-mail-reader.onrender.com/api/zoho/ui/message?email=${encodeURIComponent(email_id)}&accountId=${accountId}&folderId=${folderId}&messageId=${messageId}`;
-    const messageRes = await fetch(messageUrl);
+    const messageRes = await fetchZohoWithWaitAndRetry(messageUrl);
     if (!messageRes.ok) throw new Error(`HTTP error fetching message! status: ${messageRes.status}`);
-    
+
     const messageData = await messageRes.json();
     const rawTimeMs = parseInt(messageData.message.receivedTime || msg.receivedTime || '0', 10);
     const readableDate = new Date(rawTimeMs).toLocaleString();
@@ -224,10 +362,10 @@ async function fetchMessageDetails(email_id, accountId, msg) {
 async function findMatchingZohoEmail(email_id, jobName, company, submissionTimeMs) {
     const targetFrom = 'applyonline@dice.com';
     const normJob = normalizeText(jobName);
-    const normComp = normalizeText(company);
+    const cleanComp = cleanCompanyName(company);
 
     const inboxUrl = `https://zoho-mail-reader.onrender.com/api/zoho/ui/inbox?email=${encodeURIComponent(email_id)}&limit=10&start=1`;
-    const inboxRes = await fetch(inboxUrl);
+    const inboxRes = await fetchZohoWithWaitAndRetry(inboxUrl);
     if (!inboxRes.ok) throw new Error(`HTTP error! status: ${inboxRes.status}`);
 
     const inboxData = await inboxRes.json();
@@ -245,20 +383,20 @@ async function findMatchingZohoEmail(email_id, jobName, company, submissionTimeM
     for (const msg of diceMessages) {
         const normSubject = normalizeText(msg.subject);
 
-        // Tier 1: Check if Subject contains both Company AND Job Title
-        const subjectHasComp = normComp ? normSubject.includes(normComp) : true;
+        // Tier 1: Check if Subject contains both clean Company AND Job Title
+        const subjectHasComp = cleanComp ? normSubject.includes(cleanComp) : true;
         const subjectHasJob = normJob ? normSubject.includes(normJob) : true;
 
         if (subjectHasComp && subjectHasJob) {
             return await fetchMessageDetails(email_id, accountId, msg);
         }
 
-        // Tier 2 Fallback: If Subject matches company OR contains "application", inspect Body
+        // Tier 2 Fallback: If Subject matches clean company OR contains "application", inspect Body
         if (subjectHasComp || normSubject.includes('application')) {
             const fullReceipt = await fetchMessageDetails(email_id, accountId, msg);
             if (fullReceipt) {
                 const normBody = normalizeText(fullReceipt.text);
-                const bodyHasComp = normComp ? normBody.includes(normComp) : true;
+                const bodyHasComp = cleanComp ? normBody.includes(cleanComp) : true;
                 const bodyHasJob = normJob ? normBody.includes(normJob) : true;
                 if (bodyHasComp && (bodyHasJob || subjectHasJob)) {
                     return fullReceipt;
@@ -272,10 +410,19 @@ async function findMatchingZohoEmail(email_id, jobName, company, submissionTimeM
 
 function launchBackgroundZohoPolling(job, submissionTimeMs) {
     const { email_id, applywizz_id, job_name, company, url } = job;
-    
+
     (async () => {
+        if (!isWithinOperatingHours() || !isRunActive) {
+            log(applywizz_id, `[Zoho-BG] Outside active operating window or cutoff reached. Skipping detached background polling.`);
+            return;
+        }
+
         log(applywizz_id, `[Zoho-BG] Launched detached background polling for ${email_id}...`);
         for (let i = 1; i <= 10; i++) {
+            if (!isWithinOperatingHours() || !isRunActive) {
+                log(applywizz_id, `[Zoho-BG] Operating cutoff reached during polling. Terminating polling loop.`);
+                return;
+            }
             log(applywizz_id, `[Zoho-BG] Attempt ${i}/10 - Checking inbox...`);
             try {
                 const receipt = await findMatchingZohoEmail(email_id, job_name, company, submissionTimeMs);
@@ -312,15 +459,15 @@ async function runAutomation(job) {
     const { url, applywizz_id, email_id, zoho_connected, job_name, company } = job;
     await updateJobStatus(job, 'PROCESSING');
     log(applywizz_id, `Starting Dice automation for: ${url}`);
-    
+
     let jobStatus = 'Failed';
     let jobReason = 'Unknown error';
     let emailProof = { status: "failed application" };
     let screenshotUrl = null;
-    
+
     let contextOptions = {};
     const newSessionPath = path.join(sessionsDir, `${applywizz_id}_session.json`);
-    
+
     try {
         // Fetch session state from Postgres
         const sessionData = await queryDB('SELECT session_state FROM dicev2_sessions WHERE email_id = $1', [email_id]);
@@ -338,7 +485,7 @@ async function runAutomation(job) {
 
     try {
         await page.goto(url, { waitUntil: 'domcontentloaded' });
-        await randomWait(applywizz_id, page, 3000, 6000); 
+        await randomWait(applywizz_id, page, 3000, 6000);
 
         log(applywizz_id, 'Waiting for Apply button...');
         const applyButton = page.locator('[data-testid="apply-button"]');
@@ -347,19 +494,23 @@ async function runAutomation(job) {
         } catch (e) {
             throw new Error("no_apply_button");
         }
-        
+
+        if (!isWithinOperatingHours() || !isRunActive) {
+            throw new Error("Action aborted: Outside active operating window or cutoff reached.");
+        }
+
         log(applywizz_id, 'Clicking Apply...');
         await applyButton.click();
-        await randomWait(applywizz_id, page, 5000, 10000); 
-        
+        await randomWait(applywizz_id, page, 5000, 10000);
+
         log(applywizz_id, 'Checking if login is required or wizard...');
         const emailInput = page.locator('input[name="email"]').first()
             .or(page.locator('input[type="email"]').first())
             .or(page.locator('input[inputmode="email"]').first());
-            
+
         const nextButton = page.locator('button').filter({ hasText: /^Next$/i }).first();
         const submitButton = page.locator('button').filter({ hasText: /^Submit$/i }).first();
-        
+
         const expectedElement = emailInput.or(nextButton).or(submitButton);
         await expectedElement.waitFor({ state: 'visible', timeout: 30000 });
 
@@ -377,19 +528,19 @@ async function runAutomation(job) {
                     .or(page.locator('button[type="submit"]'))
                     .first();
                 await continueBtn.click();
-                await randomWait(applywizz_id, page, 3000, 6000); 
-                
+                await randomWait(applywizz_id, page, 3000, 6000);
+
                 const passwordInput = page.locator('input[name="password"]').first();
                 await passwordInput.waitFor({ state: 'visible', timeout: 15000 });
                 await passwordInput.fill(password);
-                
+
                 log(applywizz_id, 'Logging in...');
                 const submitPassBtn = page.locator('[data-testid="submit-password"]')
                     .or(page.locator('button[type="submit"]'))
                     .first();
                 await submitPassBtn.click();
-                await randomWait(applywizz_id, page, 5000, 10000); 
-                
+                await randomWait(applywizz_id, page, 5000, 10000);
+
                 const afterLoginElement = nextButton.or(submitButton);
                 await afterLoginElement.waitFor({ state: 'visible', timeout: 30000 });
             } catch (err) {
@@ -397,7 +548,7 @@ async function runAutomation(job) {
                 const stuckOnEmail = await emailInput.isVisible().catch(() => false);
                 const stuckOnPassword = await page.locator('input[name="password"]').isVisible().catch(() => false);
                 const stillOnLoginUrl = page.url().includes('/login');
-                
+
                 if (stuckOnEmail || stuckOnPassword || stillOnLoginUrl) {
                     throw new Error("Login Failed: Invalid credentials or account blocked.");
                 } else {
@@ -406,17 +557,17 @@ async function runAutomation(job) {
                     throw new Error("Login Timeout: Did not reach Next/Submit button after login.");
                 }
             }
-            
+
             await context.storageState({ path: newSessionPath });
             const savedState = JSON.parse(fs.readFileSync(newSessionPath, 'utf8'));
-            
+
             // Save to Postgres
             await queryDB(`
                 INSERT INTO dicev2_sessions (email_id, session_state) 
                 VALUES ($1, $2) 
                 ON CONFLICT (email_id) DO UPDATE SET session_state = EXCLUDED.session_state
             `, [email_id, JSON.stringify(savedState)]);
-            
+
             log(applywizz_id, `Session state saved to Azure PostgreSQL.`);
         } else {
             log(applywizz_id, 'Already logged in. Wizard page detected.');
@@ -432,8 +583,11 @@ async function runAutomation(job) {
             stepCount++;
             const nextOrSubmit = nextButton.or(submitButton);
             await nextOrSubmit.waitFor({ state: 'visible', timeout: 15000 });
-            
+
             if (await submitButton.isVisible()) {
+                if (!isWithinOperatingHours() || !isRunActive) {
+                    throw new Error("Action aborted: Outside active operating window or cutoff reached.");
+                }
                 log(applywizz_id, `Submit button found (Step ${stepCount}). Clicking Submit...`);
                 await submitButton.click();
                 isSubmitted = true;
@@ -446,7 +600,7 @@ async function runAutomation(job) {
                 throw new Error("Wizard navigation failed: Neither Next nor Submit was found.");
             }
         }
-        
+
         if (!isSubmitted) {
             throw new Error(`Stuck on wizard: Exceeded ${maxSteps} steps without finding Submit.`);
         }
@@ -474,14 +628,14 @@ async function runAutomation(job) {
         }
 
         log(applywizz_id, 'Taking clean full-page screenshot and sending to AWS S3...');
-        const screenshotBuffer = await page.screenshot({ fullPage: true });
-        
+        const screenshotBuffer = await page.screenshot();
+
         // Push to AWS S3
         if (s3 && process.env.AWS_BUCKET_NAME && process.env.AWS_S3_BASE_PATH) {
             const safeCompany = company ? company.replace(/[/\\?%*:|"<>\x00-\x1F]/g, '-') : 'UnknownCompany';
             const safeJobName = job_name ? job_name.replace(/[/\\?%*:|"<>\x00-\x1F]/g, '-') : 'UnknownJob';
             const objectKey = `${process.env.AWS_S3_BASE_PATH}/${applywizz_id}/${applywizz_id}|${safeCompany}|${safeJobName}.png`;
-            
+
             await s3.send(new PutObjectCommand({
                 Bucket: process.env.AWS_BUCKET_NAME,
                 Key: objectKey,
@@ -493,10 +647,10 @@ async function runAutomation(job) {
         } else {
             log(applywizz_id, `WARNING: S3 missing config. Skipping upload.`);
         }
-        
+
         const submissionTimeMs = Date.now();
         jobStatus = 'Completed';
-        
+
         if (zoho_connected) {
             jobReason = 'awaiting zoho';
             emailProof = { status: "pending receipt" };
@@ -505,20 +659,20 @@ async function runAutomation(job) {
             jobReason = 'zoho skipped';
             emailProof = { status: "not connected" };
         }
-        
+
     } catch (error) {
         log(applywizz_id, `ERROR: ${error.message}`);
         jobStatus = 'Failed';
         jobReason = error.message;
         emailProof = { status: "failed application" };
-        
+
         if (error.message.includes('Login Failed')) {
             job.fatalLoginError = true;
         }
     } finally {
-        if (page) await page.close().catch(() => {});
-        if (context) await context.close().catch(() => {});
-        
+        if (page) await page.close().catch(() => { });
+        if (context) await context.close().catch(() => { });
+
         // Write exactly to Azure DB specifications
         try {
             await queryDB(`
@@ -526,7 +680,7 @@ async function runAutomation(job) {
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             `, [applywizz_id, url, job_name, company, jobStatus, jobReason, JSON.stringify(emailProof), screenshotUrl]);
             log(applywizz_id, `Job Finished with status: ${jobStatus}. Saved to PostgreSQL.`);
-            
+
             if (jobStatus === 'Completed') {
                 clientSuccessCounts[applywizz_id] = (clientSuccessCounts[applywizz_id] || 0) + 1;
                 await queryDB(`
@@ -534,9 +688,9 @@ async function runAutomation(job) {
                     VALUES ($1, 1) 
                     ON CONFLICT (applywizz_id) DO UPDATE 
                     SET completed_count = dicev2_client_counters.completed_count + 1
-                `, [applywizz_id]).catch(()=>{});
+                `, [applywizz_id]).catch(() => { });
             }
-        } catch(dbSaveErr) {
+        } catch (dbSaveErr) {
             log(applywizz_id, `CRITICAL DB ERROR saving job result: ${dbSaveErr.message}`);
         }
 
@@ -552,53 +706,32 @@ async function runAutomation(job) {
                 }
             }
         } else if (job.fatalLoginError) {
-            log(applywizz_id, `Fatal Login Error detected! Purging client for the day across RAM and DB.`);
-
-            // 1. In-memory exclusions
-            purgedClientsToday.add(applywizz_id);
             fatalLoginClients.add(applywizz_id);
-
-            // 2. Drop from RAM masterBacklog
+            log(applywizz_id, `Fatal Login Error detected! Dropping all remaining jobs for this client to save resources.`);
             for (let i = masterBacklog.length - 1; i >= 0; i--) {
                 if (masterBacklog[i].applywizz_id === applywizz_id) {
                     masterBacklog.splice(i, 1);
                 }
             }
-
-            // 3. Drop any remaining jobs from RAM jobQueue
-            for (let i = jobQueue.length - 1; i >= 0; i--) {
-                if (jobQueue[i].applywizz_id === applywizz_id) {
-                    jobQueue.splice(i, 1);
-                }
-            }
-
-            // 4. Persist 'purged' status and delete from DB tables
-            await queryDB('DELETE FROM dicev2_master_backlog WHERE applywizz_id = $1', [applywizz_id]).catch(()=>{});
-            await queryDB("DELETE FROM dicev2_live_queue WHERE applywizz_id = $1 AND status != 'PROCESSING'", [applywizz_id]).catch(()=>{});
-            await queryDB(`
-                INSERT INTO trigger_client (applywizz_id, status) 
-                VALUES ($1, 'purged') 
-                ON CONFLICT (applywizz_id) DO UPDATE SET status = 'purged'
-            `, [applywizz_id]).catch(()=>{});
         } else if (isRunActive) {
             const nextJobIndex = masterBacklog.findIndex(j => j.applywizz_id === applywizz_id);
             if (nextJobIndex !== -1) {
                 const nextJob = masterBacklog.splice(nextJobIndex, 1)[0];
                 const delayMs = Math.floor(Math.random() * (30 - 20 + 1) + 20) * 60 * 1000;
                 const targetTime = Date.now() + delayMs;
-                
+
                 nextJob.status = 'COOLDOWN';
                 nextJob.cooldown_until_ms = targetTime;
-                nextJob.cooldown_until = new Date(targetTime).toLocaleTimeString(); 
-                
+                nextJob.cooldown_until = new Date(targetTime).toLocaleTimeString();
+
                 jobQueue.push(nextJob);
                 log(applywizz_id, `Next job pulled. On 20-30 min COOLDOWN until ${nextJob.cooldown_until}`);
             }
         }
-        
+
         await syncLiveQueue();
         await syncMasterBacklog();
-        
+
         activeUsers.delete(applywizz_id);
         activeWorkers--;
         printDashboard();
@@ -622,26 +755,34 @@ async function performBrowserRestart() {
     try {
         if (globalBrowser) {
             sysLog('Closing Chromium to clear Memory/RAM leak...');
-            await globalBrowser.close().catch(()=>{});
+            await globalBrowser.close().catch(() => { });
             globalBrowser = null;
         }
     } catch (e) {
         sysLog(`Error closing browser: ${e.message}`);
     }
-    
+
     sysLog('Relaunching fresh Chromium instance...');
     const isHeadless = process.env.HEADLESS !== 'false';
     globalBrowser = await chromium.launch({ headless: isHeadless });
-    
+
     jobsProcessedSinceRestart = 0;
     isBrowserRestarting = false;
     isBrowserIdleClosed = false;
-    
+
     sysLog('Browser restarted successfully. Resuming queue...');
     checkQueue();
 }
 
 async function checkQueue() {
+    if (!isWithinOperatingHours()) {
+        if (isRunActive || activeWorkers > 0 || jobQueue.length > 0) {
+            sysLog('[QUEUE-GATE] Current time/day is outside active operating schedule. Enforcing standby.');
+            await terminateJobRun('Schedule Standby Gate');
+        }
+        return;
+    }
+
     if (!isRunActive && activeWorkers === 0) return;
 
     if (isBrowserRestarting) {
@@ -659,7 +800,7 @@ async function checkQueue() {
     if (activeWorkers >= MAX_WORKERS) return;
 
     const nextJob = jobQueue.find(j => j.status === 'PENDING' && !activeUsers.has(j.applywizz_id));
-    if (!nextJob) return; 
+    if (!nextJob) return;
 
     // Safeguard: Drop job immediately if client already reached 10 completed jobs
     if ((clientSuccessCounts[nextJob.applywizz_id] || 0) >= 10) {
@@ -679,16 +820,21 @@ async function checkQueue() {
     jobsProcessedSinceRestart++;
     printDashboard();
 
-    runAutomation(nextJob).finally(() => {});
+    runAutomation(nextJob).finally(() => { });
     checkQueue();
 }
 
 function startCooldownEngine() {
     if (cooldownTimer) clearInterval(cooldownTimer);
     cooldownTimer = setInterval(async () => {
+        if (!isWithinOperatingHours()) {
+            clearInterval(cooldownTimer);
+            cooldownTimer = null;
+            return;
+        }
         let changed = false;
         const now = Date.now();
-        
+
         for (const job of jobQueue) {
             if (job.status === 'COOLDOWN' && now >= job.cooldown_until_ms) {
                 job.status = 'PENDING';
@@ -698,10 +844,10 @@ function startCooldownEngine() {
                 log(job.applywizz_id, `Cooldown finished! Job is now PENDING.`);
             }
         }
-        
+
         if (changed) {
             await syncLiveQueue();
-            checkQueue(); 
+            checkQueue();
         }
 
         if (jobQueue.length === 0 && masterBacklog.length === 0 && activeWorkers === 0) {
@@ -712,13 +858,13 @@ function startCooldownEngine() {
                     isBrowserIdleClosed = true;
                     try {
                         await globalBrowser.close();
-                    } catch(e) {}
+                    } catch (e) { }
                     globalBrowser = null;
                     sysLog(`[SYSTEM] Queues temporarily empty. Closed Chromium to save RAM while waiting for next 30-min background scraper check (Empty checks: ${consecutiveEmptyPolls}/2)...`);
                 }
             }
         }
-    }, 10000); 
+    }, 10000);
 }
 
 async function terminateJobRun(reason) {
@@ -730,42 +876,42 @@ async function terminateJobRun(reason) {
         clearInterval(cooldownTimer);
         cooldownTimer = null;
     }
-    
+
     isRunActive = false;
     consecutiveEmptyPolls = 0;
     sysLog(`${reason} Initiating Aggressive RAM Cleanup.`);
-    
+
     if (globalBrowser) {
-        await globalBrowser.close().catch(() => {});
-        globalBrowser = null; 
+        await globalBrowser.close().catch(() => { });
+        globalBrowser = null;
     }
     isBrowserIdleClosed = false;
-    
+
     activeUsers.clear();
     clientSuccessCounts = {};
     purgedClientsToday.clear();
     fatalLoginClients.clear();
     jobsProcessedSinceRestart = 0;
     isBrowserRestarting = false;
-    
-    await queryDB('TRUNCATE TABLE trigger_client').catch(() => {});
-    
+
+    await queryDB("DELETE FROM trigger_client WHERE status != 'purged'").catch(() => { });
+
     exec('pkill -f chrome', (err) => {
         if (!err) sysLog("Assassinated stray Chrome zombie processes.");
-        
+
         if (global.gc) {
             global.gc();
             sysLog("Forced V8 Garbage Collection complete.");
         } else {
             sysLog("Garbage Collection not exposed.");
         }
-        
+
         sysLog("Chromium terminated and Memory flushed. Standing by for next Cron trigger...");
     });
 }
 
 async function pollAndIngestNewJobs() {
-    if (!isRunActive) return;
+    if (!isRunActive || !isWithinOperatingHours()) return;
     try {
         sysLog('[POLLER] Running 30-minute background check for newly scraped jobs...');
 
@@ -797,7 +943,7 @@ async function pollAndIngestNewJobs() {
             if (purgedClientsToday.has(row.applywizz_id)) continue;
             if ((clientSuccessCounts[row.applywizz_id] || 0) >= 10) continue;
             if (fatalLoginClients.has(row.applywizz_id)) continue;
-            
+
             existingUrls.add(row.url);
             newJobs.push(row);
         }
@@ -981,6 +1127,11 @@ async function getTodayCompletedCountsMap() {
 }
 
 async function startJobRun(isFresh = true) {
+    if (!isWithinOperatingHours()) {
+        sysLog('[RUN] Refusing to start job run: Current time/day is outside active operating schedule.');
+        return;
+    }
+
     const isAlreadyRunning = isRunActive || jobQueue.length > 0 || masterBacklog.length > 0;
 
     if (isAlreadyRunning) {
@@ -1097,7 +1248,7 @@ async function startJobRun(isFresh = true) {
               WHERE a.url = d.url AND a.applywizz_id = d.applywizz_id
           );
     `);
-    
+
     if (rawJobs.length === 0) {
         sysLog('No valid fresh jobs found in DB initially. Standing by with 30-minute background scraper poller active.');
         startCooldownEngine();
@@ -1109,7 +1260,7 @@ async function startJobRun(isFresh = true) {
     // 2. Zoho Precheck
     const clientsToPrecheck = rawJobs.map(r => ({ email_id: r.email_id, applywizz_id: r.applywizz_id }));
     const precheckedClients = await precheckZohoConnections(clientsToPrecheck);
-    
+
     // Batch query today completed counts for all clients in 1 single query
     const todayCountsMap = await getTodayCompletedCountsMap();
     for (const [uid, count] of todayCountsMap.entries()) {
@@ -1148,13 +1299,13 @@ async function startJobRun(isFresh = true) {
     }
 
     await syncMasterBacklog();
-    await syncLiveQueue(); 
+    await syncLiveQueue();
     startCooldownEngine();
 
     sysLog('Launching global Chromium browser...');
     const isHeadless = process.env.HEADLESS !== 'false';
     globalBrowser = await chromium.launch({ headless: isHeadless });
-    
+
     sysLog('Starting Queue Manager...');
     checkQueue();
 }
@@ -1164,13 +1315,8 @@ async function pollClientStatusApi() {
     if (!apiUrl) return;
 
     try {
-        const now = new Date();
-        // Calculate current IST minutes from midnight (UTC + 5 hours 30 mins)
-        const istMinutes = (now.getUTCHours() * 60 + now.getUTCMinutes() + 330) % 1440;
-        
-        // 10:00 AM IST = 10 * 60 = 600 minutes; 11:59 PM IST = 1439 minutes
-        // Only poll between 10:00 AM IST and 11:58 PM IST (complete standby overnight)
-        if (istMinutes < 600 || istMinutes >= 1439) {
+        // Only poll during scheduled days and between 10:00 AM IST and 11:00 PM IST (complete standby on non-scheduled days and overnight)
+        if (!isWithinStatusPollerHours()) {
             return;
         }
 
@@ -1185,9 +1331,9 @@ async function pollClientStatusApi() {
         const clientList = data.clients || (Array.isArray(data) ? data : []);
         if (!Array.isArray(clientList) || clientList.length === 0) return;
 
-        const completedClients = clientList.filter(item => 
-            item.applywizz_id && 
-            item.status && 
+        const completedClients = clientList.filter(item =>
+            item.applywizz_id &&
+            item.status &&
             item.status.trim().toLowerCase() === 'completed'
         );
 
@@ -1199,10 +1345,14 @@ async function pollClientStatusApi() {
         const newlyCompleted = completedClients.filter(c => !triggeredSet.has(c.applywizz_id));
         if (newlyCompleted.length === 0) return;
 
-        sysLog(`[STATUS-POLLER] Found ${newlyCompleted.length} new completed client(s): ${newlyCompleted.map(c=>c.applywizz_id).join(', ')}`);
+        sysLog(`[STATUS-POLLER] Found ${newlyCompleted.length} new completed client(s): ${newlyCompleted.map(c => c.applywizz_id).join(', ')}`);
 
         let newlyAddedJobsCount = 0;
         for (const clientItem of newlyCompleted) {
+            if (!isWithinStatusPollerHours()) {
+                sysLog('[STATUS-POLLER] 11:00 PM IST status cutoff or inactive schedule reached during candidate loop. Aborting loop.');
+                break;
+            }
             const uid = clientItem.applywizz_id;
             const todayCount = await getTodayClientCompletedCount(uid);
             clientSuccessCounts[uid] = Math.max(clientSuccessCounts[uid] || 0, todayCount);
@@ -1268,6 +1418,11 @@ async function pollClientStatusApi() {
         }
 
         if (newlyAddedJobsCount > 0) {
+            if (!isWithinOperatingHours()) {
+                sysLog('[STATUS-POLLER] Operating cutoff reached before activating jobs. Aborting activation.');
+                return;
+            }
+
             await syncMasterBacklog();
             await syncLiveQueue();
 
@@ -1342,13 +1497,13 @@ app.get('/api/stats', async (req, res) => {
             timeFilter = `WHERE ${filter.clause}`;
             params = filter.params;
         }
-        
+
         // 1. Distinct active clients directly from clients_additional_info
         let activeClientsCount = 0;
         try {
             const activeRes = await queryDB("SELECT COUNT(DISTINCT applywizz_id) as count FROM clients_additional_info WHERE applywizz_id IS NOT NULL");
             activeClientsCount = parseInt(activeRes[0]?.count || 0, 10);
-        } catch(e) {
+        } catch (e) {
             console.error("Error fetching active clients count:", e.message);
         }
 
@@ -1528,7 +1683,7 @@ app.post('/api/run-client', async (req, res) => {
         const todayCount = await getTodayClientCompletedCount(applywizz_id);
         clientSuccessCounts[applywizz_id] = Math.max(clientSuccessCounts[applywizz_id] || 0, todayCount);
         if (todayCount >= 10 && !extend_cap) {
-            return res.status(400).json({ 
+            return res.status(400).json({
                 error: `Client ${applywizz_id} has already reached 10 completed applications today.`,
                 requires_confirmation: true,
                 completed_count: todayCount
@@ -1555,10 +1710,10 @@ app.post('/api/run-client', async (req, res) => {
         `, [applywizz_id]);
 
         if (jobs.length === 0) {
-            return res.json({ 
-                success: true, 
-                count: 0, 
-                message: `No new unapplied scraped jobs found in the last 24 hours for ${applywizz_id}.` 
+            return res.json({
+                success: true,
+                count: 0,
+                message: `No new unapplied scraped jobs found in the last 24 hours for ${applywizz_id}.`
             });
         }
 
@@ -1712,10 +1867,10 @@ app.post('/api/trigger', express.json(), async (req, res) => {
         }
         const isFresh = req.body && req.body.mode === 'fresh';
         sysLog(`Manual trigger activated via Dashboard. Mode: ${isFresh ? 'FRESH' : 'RESUME'}`);
-        
+
         // Fire and forget so we don't hold the HTTP request open for hours
         startJobRun(isFresh).catch(err => sysLog(`MANUAL RUN ERROR: ${err.message}`));
-        
+
         res.json({ message: 'Automation started successfully.' });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -1727,14 +1882,14 @@ async function upsertTable(tableName, dataObj) {
     if (!dataObj || Object.keys(dataObj).length === 0) return;
     const keys = Object.keys(dataObj);
     const values = Object.values(dataObj);
-    
+
     const cols = keys.map(k => `"${k}"`).join(', ');
     const vals = keys.map((_, i) => '$' + (i + 1)).join(', ');
-    
+
     const updates = keys.filter(k => k !== 'id')
-                        .map(k => `"${k}" = EXCLUDED."${k}"`)
-                        .join(', ');
-    
+        .map(k => `"${k}" = EXCLUDED."${k}"`)
+        .join(', ');
+
     const query = `
         INSERT INTO ${tableName} (${cols})
         VALUES (${vals})
@@ -1746,7 +1901,7 @@ async function upsertTable(tableName, dataObj) {
 function parseArrayIfNeeded(key, val) {
     if (typeof val === 'string') {
         if (val.startsWith('[') && val.endsWith(']')) {
-            try { return JSON.parse(val); } catch(e) {}
+            try { return JSON.parse(val); } catch (e) { }
         }
         // Explicitly wrap known array fields if they come as raw strings (e.g. "NA" instead of ["NA"])
         const arrayFields = ['exclude_companies', 'job_role_preferences', 'location_preferences', 'add_ons_info'];
@@ -1768,14 +1923,14 @@ function mapClientKeys(client) {
         else if (k === 'careerassociatemanagerid') key = 'career_associate_manager_id';
         else if (k === 'clientofficeid') key = 'client_office_id';
         else if (k === 'onboardingdate') key = 'onboarding_date';
-        
+
         mapped[key] = parseArrayIfNeeded(k, v);
     }
-    
+
     // Satisfy NOT NULL constraints in DB
     mapped.raw_payload = JSON.stringify(client);
     mapped.imported_at = new Date().toISOString();
-    
+
     return mapped;
 }
 
@@ -1785,14 +1940,14 @@ function mapProfileKeys(profile) {
         let key = k;
         if (k === 'created_at') key = 'crm_created_at';
         else if (k === 'updated_at') key = 'crm_updated_at';
-        
+
         mapped[key] = parseArrayIfNeeded(k, v);
     }
-    
+
     // Satisfy NOT NULL constraints in DB
     mapped.raw_payload = JSON.stringify(profile);
     if (!mapped['Time Zone']) mapped['Time Zone'] = 'UTC';
-    
+
     return mapped;
 }
 
@@ -1802,7 +1957,7 @@ async function syncClientsTask() {
         const res1 = await fetch('https://applywizz-ca-management.vercel.app/api/active-clients');
         const data1 = await res1.json();
         const activeIds = data1.applywizz_ids || [];
-        
+
         if (activeIds.length === 0) {
             sysLog('No active clients found in API.');
             return;
@@ -1810,7 +1965,7 @@ async function syncClientsTask() {
 
         const dbRes = await queryDB("SELECT applywizz_id FROM clients_additional_info WHERE applywizz_id IS NOT NULL");
         let toDelete = dbRes.map(row => row.applywizz_id);
-        
+
         const batchSize = 5;
         for (let i = 0; i < activeIds.length; i += batchSize) {
             const batch = activeIds.slice(i, i + batchSize);
@@ -1818,7 +1973,7 @@ async function syncClientsTask() {
                 try {
                     const r = await fetch(`https://www.apply-wizz.me/api/get-client-details?applywizz_id=${id}`);
                     const data2 = await r.json();
-                    
+
                     if (data2.client) {
                         const mappedClient = mapClientKeys(data2.client);
                         await upsertTable('clients_additional_info', mappedClient);
@@ -1827,7 +1982,7 @@ async function syncClientsTask() {
                         const mappedProfile = mapProfileKeys(data2.additional_information);
                         await upsertTable('client_profiles', mappedProfile);
                     }
-                    
+
                     toDelete = toDelete.filter(existing => existing !== id);
                 } catch (err) {
                     sysLog(`Failed to sync client ${id}: ${err.message}`);
@@ -1835,16 +1990,16 @@ async function syncClientsTask() {
             }));
             await new Promise(resolve => setTimeout(resolve, 500));
         }
-        
+
         if (toDelete.length > 0) {
             sysLog(`Removing ${toDelete.length} inactive clients from DB.`);
-            const placeholders = toDelete.map((_, i) => `$${i+1}`).join(',');
-            
+            const placeholders = toDelete.map((_, i) => `$${i + 1}`).join(',');
+
             // Delete safely catching errors in case of FK constraints
             await queryDB(`DELETE FROM clients_additional_info WHERE applywizz_id IN (${placeholders})`, toDelete).catch(e => sysLog("Delete CAI Error: " + e.message));
             await queryDB(`DELETE FROM client_profiles WHERE applywizz_id IN (${placeholders})`, toDelete).catch(e => sysLog("Delete CP Error: " + e.message));
         }
-        
+
         sysLog('Client Sync Process Complete!');
     } catch (e) {
         sysLog(`SYNC ERROR: ${e.message}`);
@@ -1855,6 +2010,114 @@ app.post('/api/sync-clients', async (req, res) => {
     sysLog('Client Sync activated via Dashboard.');
     syncClientsTask().catch(err => sysLog(`SYNC RUN ERROR: ${err.message}`));
     res.json({ message: 'Sync started successfully.' });
+});
+
+// --- SCRAPED JOBS ARCHIVER ---
+app.get('/api/archive-summary', async (req, res) => {
+    try {
+        const olderCountRes = await queryDB(`
+            SELECT COUNT(*) as count 
+            FROM dice_scraped_jobs 
+            WHERE scraped_at < NOW() - INTERVAL '24 hours'
+        `);
+        const totalScrapedRes = await queryDB(`SELECT COUNT(*) as count FROM dice_scraped_jobs`);
+        const totalArchivedRes = await queryDB(`SELECT COUNT(*) as count FROM dice_archived_jobs`);
+
+        res.json({
+            countOlderThan24h: parseInt(olderCountRes[0]?.count || 0, 10),
+            totalScraped: parseInt(totalScrapedRes[0]?.count || 0, 10),
+            totalArchived: parseInt(totalArchivedRes[0]?.count || 0, 10),
+            isArchiving: isArchivingInProgress
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/archive-scraped-jobs', async (req, res) => {
+    if (isArchivingInProgress) {
+        return res.status(409).json({ error: 'Job archiving is already in progress.' });
+    }
+
+    isArchivingInProgress = true;
+    const startTime = Date.now();
+    const cutoffDate = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+    sysLog(`[ARCHIVE] Archive process initiated for scraped jobs older than ${cutoffDate.toISOString()}...`);
+
+    try {
+        let totalMoved = 0;
+        let batchIndex = 0;
+        const batchSize = 5000;
+
+        // Collect URLs currently queued in RAM to ensure in-flight jobs are never touched
+        const activeUrls = [
+            ...jobQueue.map(j => j.url),
+            ...masterBacklog.map(j => j.url)
+        ].filter(Boolean);
+
+        while (true) {
+            batchIndex++;
+            let querySql = `
+                WITH to_archive AS (
+                    SELECT id
+                    FROM dice_scraped_jobs
+                    WHERE scraped_at < $1
+            `;
+            const params = [cutoffDate];
+
+            if (activeUrls.length > 0) {
+                querySql += ` AND url != ALL($2) `;
+                params.push(activeUrls);
+            }
+
+            querySql += `
+                    LIMIT ${batchSize}
+                ),
+                inserted AS (
+                    INSERT INTO dice_archived_jobs (
+                        id, url, title, company, applywizz_id, company_email, scraped_at, preflight_status, archived_at
+                    )
+                    SELECT s.id, s.url, s.title, s.company, s.applywizz_id, s.company_email, s.scraped_at, s.preflight_status, NOW()
+                    FROM dice_scraped_jobs s
+                    JOIN to_archive a ON s.id = a.id
+                    ON CONFLICT (id) DO UPDATE SET
+                        archived_at = EXCLUDED.archived_at
+                    RETURNING id
+                )
+                DELETE FROM dice_scraped_jobs
+                WHERE id IN (SELECT id FROM inserted)
+                RETURNING id;
+            `;
+
+            const movedRows = await queryDB(querySql, params);
+            const countInBatch = movedRows.length;
+            totalMoved += countInBatch;
+
+            if (countInBatch > 0) {
+                sysLog(`[ARCHIVE] Batch #${batchIndex}: Transferred and deleted ${countInBatch} jobs (Cumulative: ${totalMoved}).`);
+            }
+
+            if (countInBatch < batchSize) {
+                break;
+            }
+        }
+
+        const durationSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
+        sysLog(`[ARCHIVE] Completed! Successfully archived ${totalMoved} jobs in ${durationSeconds}s.`);
+
+        return res.json({
+            success: true,
+            archived_count: totalMoved,
+            duration_seconds: durationSeconds,
+            message: `Successfully moved ${totalMoved} jobs from dice_scraped_jobs to dice_archived_jobs.`
+        });
+    } catch (err) {
+        sysLog(`[ARCHIVE] Error during archive process: ${err.message}`);
+        return res.status(500).json({ error: err.message });
+    } finally {
+        isArchivingInProgress = false;
+    }
 });
 
 app.use((req, res) => {
@@ -1873,6 +2136,14 @@ initializeDatabase().catch(e => console.error("DB Init Error:", e));
 setInterval(pollClientStatusApi, 15 * 60 * 1000);
 sysLog('Started 15-minute background client status API poller.');
 pollClientStatusApi().catch(e => sysLog(`Initial Status Poll Error: ${e.message}`));
+
+// Start 3-hour periodic Zoho reconnection check for false clients (active only during 10 AM - 11 PM IST on scheduled days)
+setInterval(async () => {
+    if (!isWithinStatusPollerHours()) return;
+    sysLog('[ZOHO-3HR] Running 3-hour Zoho connection check for false clients...');
+    await refreshDisconnectedZohoClients();
+}, 3 * 60 * 60 * 1000);
+sysLog('Started 3-hour periodic Zoho reconnection checker.');
 // Schedule Daily Hard Stop at 11:59 PM IST (Asia/Kolkata)
 cron.schedule('59 23 * * *', async () => {
     sysLog('=== DAILY HARD CUTOFF: 11:59 PM IST REACHED ===');
@@ -1904,7 +2175,7 @@ if (process.env.CRON_SCHEDULE) {
                 const nowMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
                 const cronMinutes = cronHour * 60 + cronMinute;
 
-                if (nowMinutes >= cronMinutes && nowMinutes <= (cronMinutes + 240) && !isRunActive) {
+                if (nowMinutes >= cronMinutes && nowMinutes <= (cronMinutes + 240) && !isRunActive && isWithinOperatingHours()) {
                     sysLog(`[BOOT] Server restarted within scheduled run window (${cronHour}:${cronMinute} UTC). Auto-starting today's run...`);
                     startJobRun(true).catch(err => sysLog(`AUTO-START ERROR: ${err.message}`));
                 }
