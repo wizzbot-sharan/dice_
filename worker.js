@@ -1458,10 +1458,12 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.post('/api/auth/login', async (req, res) => {
     try {
         const { username, password } = req.body || {};
-        const expectedUser = process.env.DASHBOARD_USERNAME || 'admin';
-        const expectedPass = process.env.DASHBOARD_PASSWORD || 'applywizz2026';
+        const expectedUser = (process.env.DASHBOARD_USERNAME || 'admin').trim();
+        const expectedPass = (process.env.DASHBOARD_PASSWORD || 'applywizz2026').trim();
+        const inputUser = (username ? String(username) : '').trim();
+        const inputPass = (password ? String(password) : '').trim();
 
-        if (username === expectedUser && password === expectedPass) {
+        if (inputUser === expectedUser && inputPass === expectedPass) {
             return res.json({ success: true, token: 'applywizz-session-token' });
         }
         return res.status(401).json({ error: 'Invalid username or password' });
@@ -1503,7 +1505,8 @@ app.get('/api/analytics/daily', async (req, res) => {
         const rows = await queryDB(`
             SELECT 
                 TO_CHAR((time AT TIME ZONE 'UTC' AT TIME ZONE $1), 'YYYY-MM-DD') as day,
-                COUNT(*)::int as count
+                COUNT(*)::int as count,
+                COUNT(DISTINCT applywizz_id)::int as clients
             FROM dicev2_applied_jobs
             WHERE ${timeCondition}
             GROUP BY day
@@ -1527,7 +1530,8 @@ app.get('/api/analytics/hourly', async (req, res) => {
         const rows = await queryDB(`
             SELECT 
                 EXTRACT(HOUR FROM (time AT TIME ZONE 'UTC' AT TIME ZONE $1))::int as hour,
-                COUNT(*)::int as count
+                COUNT(*)::int as count,
+                COUNT(DISTINCT applywizz_id)::int as clients
             FROM dicev2_applied_jobs
             WHERE status = 'Completed'
               AND (time AT TIME ZONE 'UTC' AT TIME ZONE $1)::date = $2::date
@@ -1535,9 +1539,9 @@ app.get('/api/analytics/hourly', async (req, res) => {
             ORDER BY hour ASC
         `, [tzName, date]);
 
-        const countsByHour = {};
+        const statsByHour = {};
         for (const r of rows) {
-            countsByHour[r.hour] = r.count;
+            statsByHour[r.hour] = { count: r.count, clients: r.clients };
         }
 
         const hourlyData = [];
@@ -1546,7 +1550,8 @@ app.get('/api/analytics/hourly', async (req, res) => {
                 hour: h,
                 label: `${h}:00`,
                 displayRange: `${h}:00 - ${h + 1}:00`,
-                count: countsByHour[h] || 0
+                count: statsByHour[h]?.count || 0,
+                clients: statsByHour[h]?.clients || 0
             });
         }
 

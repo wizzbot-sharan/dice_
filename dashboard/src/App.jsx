@@ -1,19 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  format, 
-  parseISO, 
-  startOfMonth, 
-  endOfMonth, 
-  startOfWeek, 
-  endOfWeek, 
-  eachDayOfInterval, 
-  isSameMonth, 
-  isSameDay, 
-  addMonths, 
-  subMonths, 
-  subDays, 
-  startOfYear, 
-  endOfYear 
+import {
+  format,
+  parseISO,
+  startOfMonth,
+  endOfMonth,
+  startOfWeek,
+  endOfWeek,
+  eachDayOfInterval,
+  isSameMonth,
+  isSameDay,
+  addMonths,
+  subMonths,
+  subDays,
+  startOfYear,
+  endOfYear
 } from 'date-fns';
 import {
   Activity,
@@ -886,11 +886,10 @@ function App() {
                         key={tz.key}
                         type="button"
                         onClick={() => handleTimezoneChange(tz.key)}
-                        className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-medium transition-all ${
-                          selectedTz === tz.key
+                        className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-medium transition-all ${selectedTz === tz.key
                             ? 'bg-blue-600 text-white font-semibold shadow-md shadow-blue-600/30'
                             : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
-                        }`}
+                          }`}
                       >
                         <div className="flex flex-col text-left">
                           <span className="font-bold">{tz.key}</span>
@@ -1689,11 +1688,10 @@ function App() {
 
       {/* Toast Notification */}
       {purgeToast && (
-        <div className={`fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 border text-xs font-medium animate-in fade-in slide-in-from-bottom-5 duration-200 ${
-          purgeToast.type === 'success'
+        <div className={`fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 border text-xs font-medium animate-in fade-in slide-in-from-bottom-5 duration-200 ${purgeToast.type === 'success'
             ? 'bg-emerald-950/90 border-emerald-700 text-emerald-200'
             : 'bg-red-950/90 border-red-700 text-red-200'
-        }`}>
+          }`}>
           {purgeToast.type === 'success' ? (
             <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
           ) : (
@@ -1788,7 +1786,7 @@ function App() {
           setSelectingEnd(false);
           try {
             setCalendarMonth(parseISO(s.from));
-          } catch {}
+          } catch { }
         };
 
         return (
@@ -1801,13 +1799,13 @@ function App() {
 
             {/* Modal Card matching screenshot model */}
             <div className="relative z-10 w-[620px] max-w-[95vw] bg-[#000000] border border-zinc-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-100">
-              
+
               {/* Top Body (Split: Left Calendar & Inputs, Right Suggestions) */}
               <div className="flex flex-col sm:flex-row divide-y sm:divide-y-0 sm:divide-x divide-zinc-800">
-                
+
                 {/* LEFT PANE: Inputs & Calendar */}
                 <div className="p-4 sm:w-[350px] flex flex-col">
-                  
+
                   {/* From & To Preview Inputs */}
                   <div className="grid grid-cols-2 gap-2.5 mb-4">
                     <div>
@@ -1889,15 +1887,14 @@ function App() {
                           )}
 
                           {/* Day Circle / Text */}
-                          <div className={`relative z-10 w-7 h-7 rounded-full flex flex-col items-center justify-center text-xs transition-all ${
-                            isStart || isEnd
+                          <div className={`relative z-10 w-7 h-7 rounded-full flex flex-col items-center justify-center text-xs transition-all ${isStart || isEnd
                               ? 'bg-blue-600 text-white font-bold shadow-md shadow-blue-600/40'
                               : isBetween
-                              ? 'text-blue-200 font-medium'
-                              : inCurrentMonth
-                              ? 'text-zinc-200 group-hover:bg-zinc-800'
-                              : 'text-zinc-600 group-hover:bg-zinc-900'
-                          }`}>
+                                ? 'text-blue-200 font-medium'
+                                : inCurrentMonth
+                                  ? 'text-zinc-200 group-hover:bg-zinc-800'
+                                  : 'text-zinc-600 group-hover:bg-zinc-900'
+                            }`}>
                             <span>{format(day, 'd')}</span>
                             {isToday && !isStart && !isEnd && (
                               <div className="w-1 h-1 rounded-full bg-rose-500 absolute bottom-0.5" />
@@ -1922,11 +1919,10 @@ function App() {
                             key={s.id}
                             type="button"
                             onClick={() => selectSuggestion(s)}
-                            className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-left text-xs transition-all ${
-                              active
+                            className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-left text-xs transition-all ${active
                                 ? 'bg-blue-600/20 border border-blue-500/40 text-blue-200 shadow-sm'
                                 : 'text-zinc-300 hover:text-white hover:bg-zinc-900 border border-transparent'
-                            }`}
+                              }`}
                           >
                             <span className="font-semibold text-zinc-200">{s.title}</span>
                             <span className={`text-[10px] font-mono shrink-0 ml-2 ${active ? 'text-blue-300' : 'text-zinc-500'}`}>
@@ -2035,11 +2031,10 @@ function App() {
                 src={previewScreenshot.url}
                 alt="Dice Application Proof"
                 onClick={() => setScreenshotZoomed(prev => !prev)}
-                className={`rounded-xl border border-zinc-800 shadow-2xl transition-all duration-150 ${
-                  screenshotZoomed
+                className={`rounded-xl border border-zinc-800 shadow-2xl transition-all duration-150 ${screenshotZoomed
                     ? 'max-w-none w-auto cursor-zoom-out'
                     : 'max-w-full h-auto object-contain cursor-zoom-in'
-                }`}
+                  }`}
                 title={screenshotZoomed ? "Click to fit width" : "Click to view full size"}
                 loading="lazy"
               />

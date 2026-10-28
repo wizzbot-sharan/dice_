@@ -3,43 +3,55 @@ import {
   X, 
   Calendar, 
   BarChart2, 
-  Sparkles, 
+  Users, 
   Globe, 
-  Info
+  Info,
+  Clock,
+  TrendingUp
 } from 'lucide-react';
 import { format, parseISO, startOfMonth } from 'date-fns';
 
-// Helper to zero-fill missing days in date range
+// Zero-fill missing calendar days without UTC timezone shifting
 function fillDateGaps(rows, startStr, endStr) {
   if (!startStr || !endStr) return rows || [];
-  const countsMap = new Map();
-  (rows || []).forEach(r => countsMap.set(r.day, r.count));
+  const map = new Map();
+  (rows || []).forEach(r => map.set(r.day, {
+    count: Number(r.count) || 0,
+    clients: Number(r.clients) || Number(r.client_count) || 0
+  }));
 
   const result = [];
-  let curr = new Date(startStr + 'T00:00:00');
-  const end = new Date(endStr + 'T00:00:00');
+  const [sy, sm, sd] = startStr.split('-').map(Number);
+  const [ey, em, ed] = endStr.split('-').map(Number);
+  let curr = new Date(sy, sm - 1, sd, 12, 0, 0); // Noon avoids DST & UTC offset shifts
+  const end = new Date(ey, em - 1, ed, 12, 0, 0);
 
   while (curr <= end) {
-    const dayStr = curr.toISOString().slice(0, 10);
+    const y = curr.getFullYear();
+    const m = String(curr.getMonth() + 1).padStart(2, '0');
+    const d = String(curr.getDate()).padStart(2, '0');
+    const dayStr = `${y}-${m}-${d}`;
+    const entry = map.get(dayStr);
     result.push({
       day: dayStr,
-      count: countsMap.get(dayStr) || 0
+      count: entry ? entry.count : 0,
+      clients: entry ? entry.clients : 0
     });
     curr.setDate(curr.getDate() + 1);
   }
   return result;
 }
 
-// Timezone helper to format 'YYYY-MM-DD' in specified timezone
+// Current date formatted in target timezone
 function getTodayInTz(tz) {
-  const tzIanaMap = {
+  const map = {
     IST: 'Asia/Kolkata',
     UTC: 'UTC',
     EST: 'America/New_York',
     CST: 'America/Chicago',
     PST: 'America/Los_Angeles'
   };
-  const iana = tzIanaMap[tz] || 'Asia/Kolkata';
+  const iana = map[tz] || 'Asia/Kolkata';
   try {
     return new Intl.DateTimeFormat('en-CA', {
       timeZone: iana,
@@ -53,12 +65,9 @@ function getTodayInTz(tz) {
 }
 
 export default function GraphsModal({ isOpen, onClose, selectedTz = 'IST' }) {
-  // --- STATE ---
   const [showLabels, setShowLabels] = useState(true);
 
   const todayStr = useMemo(() => getTodayInTz(selectedTz), [selectedTz]);
-
-  // First day of current month in selected timezone
   const monthStartStr = useMemo(() => {
     try {
       const d = parseISO(todayStr);
@@ -68,14 +77,10 @@ export default function GraphsModal({ isOpen, onClose, selectedTz = 'IST' }) {
     }
   }, [todayStr]);
 
-  // Histogram Date Range
   const [fromDate, setFromDate] = useState(monthStartStr);
   const [toDate, setToDate] = useState(todayStr);
-
-  // Hourly Target Date
   const [hourlyDate, setHourlyDate] = useState(todayStr);
 
-  // Data States
   const [dailyData, setDailyData] = useState([]);
   const [loadingDaily, setLoadingDaily] = useState(false);
   const [dailyError, setDailyError] = useState('');
@@ -84,11 +89,9 @@ export default function GraphsModal({ isOpen, onClose, selectedTz = 'IST' }) {
   const [loadingHourly, setLoadingHourly] = useState(false);
   const [hourlyError, setHourlyError] = useState('');
 
-  // Hover States for Tooltips
-  const [hoveredBar, setHoveredBar] = useState(null); // { day, count, x, y }
-  const [hoveredHour, setHoveredHour] = useState(null); // { hour, label, count, x, y }
+  const [hoveredBar, setHoveredBar] = useState(null);
+  const [hoveredHour, setHoveredHour] = useState(null);
 
-  // Keyboard Escape listener
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e) => {
@@ -98,75 +101,76 @@ export default function GraphsModal({ isOpen, onClose, selectedTz = 'IST' }) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isOpen, onClose]);
 
-  // Sync date defaults when timezone changes
   useEffect(() => {
     setFromDate(monthStartStr);
     setToDate(todayStr);
     setHourlyDate(todayStr);
   }, [selectedTz, monthStartStr, todayStr]);
 
-  // --- FETCH DAILY HISTOGRAM DATA ---
+  // Fetch daily histogram
   useEffect(() => {
     if (!isOpen) return;
-    let isCancelled = false;
+    let cancelled = false;
 
     const fetchDaily = async () => {
       setLoadingDaily(true);
       setDailyError('');
       try {
-        let url = `/api/analytics/daily?tz=${encodeURIComponent(selectedTz)}`;
+        let url = `/api/analytics/daily?tz=${encodeURIComponent(selectedTz)}&_t=${Date.now()}`;
         if (fromDate && toDate) {
           url += `&from=${fromDate} 00:00:00&to=${toDate} 23:59:59`;
         }
-        const res = await fetch(url);
+        const res = await fetch(url, { cache: 'no-store' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (!isCancelled) {
-          // Fill continuous dates between fromDate and toDate
-          const populated = fillDateGaps(data, fromDate, toDate);
-          setDailyData(populated);
+        if (!cancelled) {
+          setDailyData(fillDateGaps(data, fromDate, toDate));
         }
       } catch (err) {
-        if (!isCancelled) setDailyError(err.message || 'Failed to load daily analytics');
+        if (!cancelled) setDailyError(err.message || 'Failed to load daily analytics');
       } finally {
-        if (!isCancelled) setLoadingDaily(false);
+        if (!cancelled) setLoadingDaily(false);
       }
     };
 
     fetchDaily();
-    return () => { isCancelled = true; };
+    return () => { cancelled = true; };
   }, [isOpen, fromDate, toDate, selectedTz]);
 
-  // --- FETCH HOURLY CURVE DATA ---
+  // Fetch hourly distribution
   useEffect(() => {
     if (!isOpen || !hourlyDate) return;
-    let isCancelled = false;
+    let cancelled = false;
 
     const fetchHourly = async () => {
       setLoadingHourly(true);
       setHourlyError('');
       try {
-        const url = `/api/analytics/hourly?date=${encodeURIComponent(hourlyDate)}&tz=${encodeURIComponent(selectedTz)}`;
-        const res = await fetch(url);
+        const url = `/api/analytics/hourly?date=${encodeURIComponent(hourlyDate)}&tz=${encodeURIComponent(selectedTz)}&_t=${Date.now()}`;
+        const res = await fetch(url, { cache: 'no-store' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (!isCancelled) {
+        if (!cancelled) {
           setHourlyData(Array.isArray(data) ? data : []);
         }
       } catch (err) {
-        if (!isCancelled) setHourlyError(err.message || 'Failed to load hourly analytics');
+        if (!cancelled) setHourlyError(err.message || 'Failed to load hourly analytics');
       } finally {
-        if (!isCancelled) setLoadingHourly(false);
+        if (!cancelled) setLoadingHourly(false);
       }
     };
 
     fetchHourly();
-    return () => { isCancelled = true; };
+    return () => { cancelled = true; };
   }, [isOpen, hourlyDate, selectedTz]);
 
-  // --- METRICS ---
+  // Metrics
   const totalDailyCompleted = useMemo(() => {
     return dailyData.reduce((acc, curr) => acc + (curr.count || 0), 0);
+  }, [dailyData]);
+
+  const peakDailyClients = useMemo(() => {
+    return Math.max(0, ...dailyData.map(d => d.clients || 0));
   }, [dailyData]);
 
   const dailyAvg = useMemo(() => {
@@ -174,20 +178,14 @@ export default function GraphsModal({ isOpen, onClose, selectedTz = 'IST' }) {
     return (totalDailyCompleted / dailyData.length).toFixed(1);
   }, [totalDailyCompleted, dailyData]);
 
-  const totalHourlyCompleted = useMemo(() => {
+  const totalHourlyJobs = useMemo(() => {
     return hourlyData.reduce((acc, curr) => acc + (curr.count || 0), 0);
   }, [hourlyData]);
 
-  const peakHour = useMemo(() => {
-    if (hourlyData.length === 0) return null;
-    let maxObj = hourlyData[0];
-    for (const h of hourlyData) {
-      if (h.count > maxObj.count) maxObj = h;
-    }
-    return maxObj.count > 0 ? maxObj : null;
+  const peakHourlyClients = useMemo(() => {
+    return Math.max(0, ...hourlyData.map(d => d.clients || 0));
   }, [hourlyData]);
 
-  // Quick range helpers
   const handleQuickRange = (type) => {
     if (type === 'month') {
       setFromDate(monthStartStr);
@@ -218,112 +216,113 @@ export default function GraphsModal({ isOpen, onClose, selectedTz = 'IST' }) {
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-[#09090b]/98 backdrop-blur-2xl overflow-y-auto text-zinc-100 flex flex-col p-4 sm:p-8 animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 bg-[#09090b]/98 backdrop-blur-xl overflow-y-auto text-zinc-100 flex flex-col p-3 sm:p-5 animate-in fade-in duration-150">
       
-      {/* --- TOP APPLE-STYLE NAV HEADER --- */}
-      <div className="max-w-7xl w-full mx-auto flex items-center justify-between pb-6 border-b border-zinc-800/80 shrink-0">
-        <div className="flex items-center gap-4">
-          {/* Apple-style circular close button on top-left */}
+      {/* Top Compact Navigation Header */}
+      <div className="max-w-7xl w-full mx-auto flex items-center justify-between pb-3 border-b border-zinc-800/80 shrink-0">
+        <div className="flex items-center gap-3">
           <button
             type="button"
             onClick={onClose}
-            className="w-9 h-9 rounded-full bg-zinc-800/90 hover:bg-zinc-700 active:scale-95 text-zinc-300 hover:text-white border border-zinc-700/80 flex items-center justify-center transition-all cursor-pointer shadow-md group"
+            className="w-8 h-8 rounded-full bg-zinc-800/90 hover:bg-zinc-700 active:scale-95 text-zinc-300 hover:text-white border border-zinc-700/80 flex items-center justify-center transition-all cursor-pointer shadow group"
             title="Close (Esc)"
           >
             <X className="w-4 h-4 transition-transform group-hover:scale-110" />
           </button>
           
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2.5">
-                <span className="p-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
-                  <BarChart2 className="w-5 h-5" />
-                </span>
-                Automation Performance Analytics
-              </h1>
-            </div>
-            <p className="text-xs text-zinc-400 mt-0.5">
-              Visual intelligence for completed job application flow
-            </p>
+          <div className="flex items-center gap-2">
+            <span className="p-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400">
+              <BarChart2 className="w-4 h-4" />
+            </span>
+            <h1 className="text-lg sm:text-xl font-bold tracking-tight text-white">
+              Automation Performance Analytics
+            </h1>
           </div>
         </div>
 
-        {/* Header Right Actions: Timezone Badge & Data Labels Switch */}
-        <div className="flex items-center gap-3">
-          <div className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-900 border border-zinc-800 text-xs text-zinc-300">
+        {/* Header Right Badges */}
+        <div className="flex items-center gap-2.5">
+          <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-zinc-900 border border-zinc-800 text-xs text-zinc-300">
             <Globe className="w-3.5 h-3.5 text-blue-400" />
-            <span className="font-semibold text-zinc-200">Timezone:</span>
+            <span className="font-semibold text-zinc-300">TZ:</span>
             <span className="font-mono text-emerald-400 font-bold">{selectedTz}</span>
           </div>
 
-          {/* Persistent Label Toggle */}
           <button
             type="button"
             onClick={() => setShowLabels(!showLabels)}
-            className={`flex items-center gap-2 px-3.5 py-1.5 rounded-xl border text-xs font-semibold transition-all cursor-pointer shadow-sm ${
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg border text-xs font-semibold transition-all cursor-pointer ${
               showLabels
-                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40 shadow-emerald-950/40'
-                : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:border-zinc-700 hover:text-zinc-200'
+                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+                : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200'
             }`}
-            title="Toggle values permanently above each bar and point"
+            title="Toggle data labels permanently above each bar and point"
           >
-            <span className={`w-2.5 h-2.5 rounded-full transition-all ${showLabels ? 'bg-emerald-400 ring-4 ring-emerald-500/20' : 'bg-zinc-600'}`} />
-            <span>Data Labels: <strong className={showLabels ? 'text-emerald-300' : 'text-zinc-500'}>{showLabels ? 'ON' : 'OFF'}</strong></span>
+            <span className={`w-2 h-2 rounded-full ${showLabels ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
+            <span>Labels: <strong>{showLabels ? 'ON' : 'OFF'}</strong></span>
           </button>
         </div>
       </div>
 
-      {/* --- MAIN SCROLLABLE DASHBOARD BODY --- */}
-      <div className="max-w-7xl w-full mx-auto flex-1 flex flex-col gap-8 py-8">
+      {/* Main Charts Body */}
+      <div className="max-w-7xl w-full mx-auto flex-1 flex flex-col gap-4 py-4">
         
         {/* ============================================================== */}
-        {/* 1. DAILY COMPLETED JOBS (HISTOGRAM)                            */}
+        {/* 1. DAILY COMPLETED JOBS & CLIENT OVERLAY (HISTOGRAM)          */}
         {/* ============================================================== */}
-        <div className="bg-zinc-900/60 border border-zinc-800/90 rounded-2xl p-5 sm:p-7 shadow-xl backdrop-blur-xl relative flex flex-col gap-6">
+        <div className="bg-zinc-900/60 border border-zinc-800/80 rounded-xl p-4 shadow-lg flex flex-col gap-3">
           
-          {/* Card Top Controls */}
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-zinc-800/60">
-            <div>
+          {/* Header Controls */}
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 pb-2.5 border-b border-zinc-800/60">
+            <div className="flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-2">
                 <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-                <h2 className="text-base sm:text-lg font-bold text-white tracking-tight">
-                  Daily Completed Jobs Histogram
+                <h2 className="text-sm sm:text-base font-bold text-white tracking-tight">
+                  Daily Completed Jobs & Active Clients
                 </h2>
               </div>
-              <p className="text-xs text-zinc-400 mt-1 flex items-center gap-1.5">
-                <Info className="w-3.5 h-3.5 text-zinc-500" />
-                Click any bar below to instantly inspect its 24-hour distribution curve.
-              </p>
+
+              {/* Chart Legend */}
+              <div className="flex items-center gap-3 text-[11px] bg-zinc-950/80 border border-zinc-800 px-2.5 py-0.5 rounded-lg">
+                <span className="flex items-center gap-1.5 text-emerald-400 font-medium">
+                  <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500 inline-block" />
+                  Completed Jobs (Bar)
+                </span>
+                <span className="flex items-center gap-1.5 text-violet-400 font-medium">
+                  <span className="w-2 h-2 rounded-full bg-violet-400 inline-block" />
+                  Active Clients (Line)
+                </span>
+              </div>
             </div>
 
-            {/* Date Range Controls & Quick Selectors */}
-            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-              <div className="flex items-center bg-zinc-950 border border-zinc-800 rounded-xl p-1 text-xs">
+            {/* Range Controls & Summary Badges */}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center bg-zinc-950 border border-zinc-800 rounded-lg p-0.5 text-xs">
                 <button
                   type="button"
                   onClick={() => handleQuickRange('month')}
-                  className="px-2.5 py-1 rounded-lg hover:bg-zinc-800/80 font-medium text-zinc-300 transition-colors"
+                  className="px-2 py-0.5 rounded hover:bg-zinc-800 font-medium text-zinc-300 transition-colors"
                 >
                   This Month
                 </button>
                 <button
                   type="button"
                   onClick={() => handleQuickRange('14d')}
-                  className="px-2.5 py-1 rounded-lg hover:bg-zinc-800/80 font-medium text-zinc-300 transition-colors"
+                  className="px-2 py-0.5 rounded hover:bg-zinc-800 font-medium text-zinc-300 transition-colors"
                 >
                   Last 14D
                 </button>
                 <button
                   type="button"
                   onClick={() => handleQuickRange('30d')}
-                  className="px-2.5 py-1 rounded-lg hover:bg-zinc-800/80 font-medium text-zinc-300 transition-colors"
+                  className="px-2 py-0.5 rounded hover:bg-zinc-800 font-medium text-zinc-300 transition-colors"
                 >
                   Last 30D
                 </button>
               </div>
 
-              {/* Exact Date Inputs */}
-              <div className="flex items-center gap-1.5 bg-zinc-950 border border-zinc-800 rounded-xl px-2.5 py-1 text-xs">
+              {/* Date Pickers */}
+              <div className="flex items-center gap-1 bg-zinc-950 border border-zinc-800 rounded-lg px-2 py-0.5 text-xs">
                 <Calendar className="w-3.5 h-3.5 text-zinc-500" />
                 <input
                   type="date"
@@ -340,31 +339,34 @@ export default function GraphsModal({ isOpen, onClose, selectedTz = 'IST' }) {
                 />
               </div>
 
-              {/* Summary Badges */}
-              <div className="flex items-center gap-2">
-                <div className="px-3 py-1 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold">
-                  Total: <span className="text-white font-bold">{totalDailyCompleted.toLocaleString()}</span>
+              {/* Summary Stats */}
+              <div className="flex items-center gap-1.5 text-xs font-semibold">
+                <div className="px-2.5 py-0.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
+                  Jobs: <strong className="text-white">{totalDailyCompleted.toLocaleString()}</strong>
                 </div>
-                <div className="px-3 py-1 rounded-xl bg-zinc-800 border border-zinc-700 text-zinc-300 text-xs font-medium">
-                  Avg: <span className="text-white font-bold">{dailyAvg}/day</span>
+                <div className="px-2.5 py-0.5 rounded-lg bg-violet-500/10 border border-violet-500/30 text-violet-400">
+                  Peak Clients: <strong className="text-white">{peakDailyClients}</strong>
+                </div>
+                <div className="px-2.5 py-0.5 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-300">
+                  Avg: <strong className="text-white">{dailyAvg}/day</strong>
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Histogram SVG Chart Component */}
-          <div className="w-full relative min-h-[280px] flex items-center justify-center">
+          {/* Histogram Chart */}
+          <div className="w-full relative min-h-[220px] flex items-center justify-center">
             {loadingDaily ? (
-              <div className="flex items-center gap-2 text-zinc-400 text-sm py-16 animate-pulse">
-                <div className="w-4 h-4 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
-                Fetching daily statistics...
+              <div className="flex items-center gap-2 text-zinc-400 text-xs py-12 animate-pulse">
+                <div className="w-3.5 h-3.5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+                Loading daily performance...
               </div>
             ) : dailyError ? (
-              <div className="text-rose-400 text-xs py-12">{dailyError}</div>
+              <div className="text-rose-400 text-xs py-8">{dailyError}</div>
             ) : dailyData.length === 0 ? (
-              <div className="text-zinc-500 text-xs py-16">No completed job records found in this date range.</div>
+              <div className="text-zinc-500 text-xs py-10">No completed jobs found for this range.</div>
             ) : (
-              <HistogramChart 
+              <HistogramOverlayChart 
                 data={dailyData} 
                 showLabels={showLabels}
                 selectedDate={hourlyDate}
@@ -377,32 +379,41 @@ export default function GraphsModal({ isOpen, onClose, selectedTz = 'IST' }) {
         </div>
 
         {/* ============================================================== */}
-        {/* 2. HOURLY DISTRIBUTION FLOW CURVE GRAPH                       */}
+        {/* 2. HOURLY DISTRIBUTION & CLIENT OVERLAY (CURVE GRAPH)         */}
         {/* ============================================================== */}
-        <div className="bg-zinc-900/60 border border-zinc-800/90 rounded-2xl p-5 sm:p-7 shadow-xl backdrop-blur-xl relative flex flex-col gap-6">
+        <div className="bg-zinc-900/60 border border-zinc-800/80 rounded-xl p-4 shadow-lg flex flex-col gap-3">
           
-          {/* Card Top Controls */}
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-zinc-800/60">
-            <div>
+          {/* Header Controls */}
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 pb-2.5 border-b border-zinc-800/60">
+            <div className="flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-2">
                 <span className="w-2.5 h-2.5 rounded-full bg-cyan-400" />
-                <h2 className="text-base sm:text-lg font-bold text-white tracking-tight">
-                  Hourly Distribution Flow Curve
+                <h2 className="text-sm sm:text-base font-bold text-white tracking-tight">
+                  24-Hour Distribution for {hourlyDate}
                 </h2>
               </div>
-              <p className="text-xs text-zinc-400 mt-1">
-                Visualizing completed jobs in 1-hour time spans across all 24 hours of the day.
-              </p>
+
+              {/* Chart Legend */}
+              <div className="flex items-center gap-3 text-[11px] bg-zinc-950/80 border border-zinc-800 px-2.5 py-0.5 rounded-lg">
+                <span className="flex items-center gap-1.5 text-cyan-400 font-medium">
+                  <span className="w-2.5 h-2 rounded-full bg-cyan-400 inline-block" />
+                  Completed Jobs
+                </span>
+                <span className="flex items-center gap-1.5 text-violet-400 font-medium">
+                  <span className="w-2 h-2 rounded-full bg-violet-400 inline-block" />
+                  Active Clients
+                </span>
+              </div>
             </div>
 
-            {/* Hourly Target Date Controls */}
-            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-              <div className="flex items-center bg-zinc-950 border border-zinc-800 rounded-xl p-1 text-xs">
+            {/* Hourly Target Controls & Stats */}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center bg-zinc-950 border border-zinc-800 rounded-lg p-0.5 text-xs">
                 <button
                   type="button"
                   onClick={() => handleQuickHourly('today')}
-                  className={`px-3 py-1 rounded-lg font-medium transition-colors ${
-                    hourlyDate === todayStr ? 'bg-zinc-800 text-emerald-400 font-bold' : 'text-zinc-400 hover:text-zinc-200'
+                  className={`px-2.5 py-0.5 rounded font-medium transition-colors ${
+                    hourlyDate === todayStr ? 'bg-cyan-500/20 text-cyan-300' : 'text-zinc-400 hover:text-zinc-200'
                   }`}
                 >
                   Today
@@ -410,15 +421,14 @@ export default function GraphsModal({ isOpen, onClose, selectedTz = 'IST' }) {
                 <button
                   type="button"
                   onClick={() => handleQuickHourly('yesterday')}
-                  className="px-3 py-1 rounded-lg hover:bg-zinc-800/80 font-medium text-zinc-400 hover:text-zinc-200 transition-colors"
+                  className="px-2.5 py-0.5 rounded text-zinc-400 hover:text-zinc-200 font-medium transition-colors"
                 >
                   Yesterday
                 </button>
               </div>
 
-              {/* Date Input */}
-              <div className="flex items-center gap-2 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-1 text-xs">
-                <Calendar className="w-3.5 h-3.5 text-cyan-400" />
+              <div className="flex items-center gap-1.5 bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-0.5 text-xs">
+                <Clock className="w-3.5 h-3.5 text-cyan-400" />
                 <input
                   type="date"
                   value={hourlyDate}
@@ -427,38 +437,31 @@ export default function GraphsModal({ isOpen, onClose, selectedTz = 'IST' }) {
                 />
               </div>
 
-              {/* Peak Hour Indicator Badge */}
-              <div className="flex items-center gap-2">
-                {peakHour ? (
-                  <div className="px-3 py-1 rounded-xl bg-cyan-500/10 border border-cyan-500/30 text-cyan-300 text-xs font-semibold flex items-center gap-1.5">
-                    <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-                    Peak: <strong className="text-white">{peakHour.displayRange} ({peakHour.count} jobs)</strong>
-                  </div>
-                ) : (
-                  <div className="px-3 py-1 rounded-xl bg-zinc-800/80 border border-zinc-700/60 text-zinc-400 text-xs">
-                    No jobs completed on this date
-                  </div>
-                )}
-                
-                <div className="px-3 py-1 rounded-xl bg-zinc-800 border border-zinc-700 text-zinc-300 text-xs font-medium">
-                  Day Total: <span className="text-white font-bold">{totalHourlyCompleted}</span>
+              <div className="flex items-center gap-1.5 text-xs font-semibold">
+                <div className="px-2.5 py-0.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-400">
+                  Total: <strong className="text-white">{totalHourlyJobs}</strong>
+                </div>
+                <div className="px-2.5 py-0.5 rounded-lg bg-violet-500/10 border border-violet-500/30 text-violet-400">
+                  Peak Clients: <strong className="text-white">{peakHourlyClients}</strong>
                 </div>
               </div>
             </div>
           </div>
 
-          {/* Hourly Curve SVG Component */}
-          <div className="w-full relative min-h-[300px] flex items-center justify-center">
+          {/* Hourly Curve Chart */}
+          <div className="w-full relative min-h-[220px] flex items-center justify-center">
             {loadingHourly ? (
-              <div className="flex items-center gap-2 text-zinc-400 text-sm py-16 animate-pulse">
-                <div className="w-4 h-4 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
-                Generating 24-hour flow curve...
+              <div className="flex items-center gap-2 text-zinc-400 text-xs py-12 animate-pulse">
+                <div className="w-3.5 h-3.5 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+                Loading hourly distribution...
               </div>
             ) : hourlyError ? (
-              <div className="text-rose-400 text-xs py-12">{hourlyError}</div>
+              <div className="text-rose-400 text-xs py-8">{hourlyError}</div>
+            ) : hourlyData.length === 0 ? (
+              <div className="text-zinc-500 text-xs py-10">No hourly activity recorded on this date.</div>
             ) : (
-              <HourlyCurveChart
-                data={hourlyData}
+              <HourlyCurveOverlayChart 
+                data={hourlyData} 
                 showLabels={showLabels}
                 hoveredHour={hoveredHour}
                 setHoveredHour={setHoveredHour}
@@ -474,9 +477,9 @@ export default function GraphsModal({ isOpen, onClose, selectedTz = 'IST' }) {
 }
 
 // =========================================================================
-// SUBCOMPONENT: HISTOGRAM CHART (Custom SVG with Curved Bars & Tooltips)
+// SUBCOMPONENT: HISTOGRAM OVERLAY CHART (Lightweight SVG, Dual Metric)
 // =========================================================================
-function HistogramChart({ data, showLabels, selectedDate, onSelectDate, hoveredBar, setHoveredBar }) {
+function HistogramOverlayChart({ data, showLabels, selectedDate, onSelectDate, hoveredBar, setHoveredBar }) {
   const containerRef = useRef(null);
   const [width, setWidth] = useState(1000);
 
@@ -489,38 +492,46 @@ function HistogramChart({ data, showLabels, selectedDate, onSelectDate, hoveredB
     return () => observer.disconnect();
   }, []);
 
-  const height = 260;
-  const padding = { top: 35, right: 30, bottom: 45, left: 45 };
+  const height = 210;
+  const padding = { top: 28, right: 35, bottom: 35, left: 45 };
 
   const chartW = width - padding.left - padding.right;
   const chartH = height - padding.top - padding.bottom;
 
-  const maxVal = Math.max(5, ...data.map(d => d.count || 0));
-  const roundedMax = Math.ceil(maxVal * 1.15); // headroom for labels
+  const maxJobs = Math.max(5, ...data.map(d => d.count || 0));
+  const roundedMaxJobs = Math.ceil(maxJobs * 1.2);
 
-  const barWidth = Math.max(14, Math.min(38, (chartW / data.length) * 0.65));
+  const maxClients = Math.max(1, ...data.map(d => d.clients || 0));
+  const roundedMaxClients = Math.ceil(maxClients * 1.25);
 
-  const getY = (val) => chartH - (val / roundedMax) * chartH;
+  const getYJobs = (val) => chartH - (val / roundedMaxJobs) * chartH;
+  const getYClients = (val) => chartH - (val / roundedMaxClients) * chartH;
   const getX = (idx) => padding.left + (idx + 0.5) * (chartW / data.length);
+
+  const barWidth = Math.max(8, Math.min(26, (chartW / data.length) * 0.55));
+
+  // Build client overlay line points
+  const clientPoints = data.map((item, idx) => ({
+    x: getX(idx),
+    y: padding.top + getYClients(item.clients || 0),
+    clients: item.clients || 0,
+    count: item.count || 0,
+    day: item.day
+  }));
+
+  const clientLinePath = clientPoints.reduce((acc, pt, i) => {
+    return i === 0 ? `M ${pt.x} ${pt.y}` : `${acc} L ${pt.x} ${pt.y}`;
+  }, '');
 
   return (
     <div ref={containerRef} className="w-full overflow-x-auto select-none">
       <svg width={width} height={height} className="overflow-visible">
-        <defs>
-          <linearGradient id="emeraldBarGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#10b981" stopOpacity="0.95" />
-            <stop offset="100%" stopColor="#059669" stopOpacity="0.4" />
-          </linearGradient>
-          <linearGradient id="activeBarGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#34d399" stopOpacity="1" />
-            <stop offset="100%" stopColor="#10b981" stopOpacity="0.8" />
-          </linearGradient>
-        </defs>
+        {/* Horizontal Grid lines (Jobs scale on Left) */}
+        {[0, 0.5, 1].map((pct, i) => {
+          const yJobVal = Math.round(roundedMaxJobs * pct);
+          const yClientVal = Math.round(roundedMaxClients * pct);
+          const yPos = padding.top + getYJobs(yJobVal);
 
-        {/* Horizontal Grid lines */}
-        {[0, 0.25, 0.5, 0.75, 1].map((pct, i) => {
-          const yVal = Math.round(roundedMax * pct);
-          const yPos = padding.top + getY(yVal);
           return (
             <g key={i}>
               <line
@@ -529,30 +540,39 @@ function HistogramChart({ data, showLabels, selectedDate, onSelectDate, hoveredB
                 x2={width - padding.right}
                 y2={yPos}
                 stroke="#27272a"
-                strokeDasharray={pct === 0 ? '0' : '4 4'}
+                strokeDasharray={pct === 0 ? '0' : '3 3'}
               />
+              {/* Left Y Axis: Jobs */}
               <text
-                x={padding.left - 10}
-                y={yPos + 4}
+                x={padding.left - 6}
+                y={yPos + 3}
                 textAnchor="end"
                 className="text-[10px] fill-zinc-500 font-mono"
               >
-                {yVal}
+                {yJobVal}
+              </text>
+              {/* Right Y Axis: Clients */}
+              <text
+                x={width - padding.right + 6}
+                y={yPos + 3}
+                textAnchor="start"
+                className="text-[10px] fill-violet-400/80 font-mono"
+              >
+                {yClientVal}c
               </text>
             </g>
           );
         })}
 
-        {/* Bars */}
+        {/* Bars (Completed Jobs) */}
         {data.map((item, idx) => {
           const x = getX(idx) - barWidth / 2;
-          const barH = (item.count / roundedMax) * chartH;
-          const y = padding.top + getY(item.count);
+          const barH = (item.count / roundedMaxJobs) * chartH;
+          const y = padding.top + getYJobs(item.count);
           const isSelected = item.day === selectedDate;
           const isHovered = hoveredBar?.day === item.day;
 
-          // Format date for label
-          let labelStr = item.day.slice(5); // '10-28'
+          let labelStr = item.day.slice(5);
           try {
             labelStr = format(parseISO(item.day), 'MMM d');
           } catch {}
@@ -560,19 +580,20 @@ function HistogramChart({ data, showLabels, selectedDate, onSelectDate, hoveredB
           return (
             <g 
               key={item.day}
-              className="cursor-pointer group"
+              className="cursor-pointer"
               onClick={() => onSelectDate(item.day)}
               onMouseEnter={() => {
                 setHoveredBar({
                   day: item.day,
                   count: item.count,
+                  clients: item.clients || 0,
                   x: x + barWidth / 2,
                   y: y - 10
                 });
               }}
               onMouseLeave={() => setHoveredBar(null)}
             >
-              {/* Invisible wider hit area */}
+              {/* Interactive Hit Area */}
               <rect
                 x={x - 4}
                 y={padding.top}
@@ -581,90 +602,98 @@ function HistogramChart({ data, showLabels, selectedDate, onSelectDate, hoveredB
                 fill="transparent"
               />
 
-              {/* Background slot subtle bar */}
-              <rect
-                x={x}
-                y={padding.top}
-                width={barWidth}
-                height={chartH}
-                rx={6}
-                ry={6}
-                fill="#18181b"
-                className="opacity-40"
-              />
-
-              {/* Actual curved bar */}
+              {/* Bar */}
               <rect
                 x={x}
                 y={y}
                 width={barWidth}
-                height={Math.max(4, barH)}
-                rx={6}
-                ry={6}
-                fill={isSelected ? 'url(#activeBarGrad)' : 'url(#emeraldBarGrad)'}
-                className={`transition-all duration-150 ${
-                  isSelected ? 'stroke-2 stroke-emerald-300 filter drop-shadow(0 0 8px rgba(16,185,129,0.5))' : ''
-                } ${isHovered ? 'brightness-125' : ''}`}
+                height={Math.max(3, barH)}
+                rx={4}
+                ry={4}
+                fill={isSelected ? '#34d399' : '#10b981'}
+                fillOpacity={isSelected ? 1 : 0.85}
+                className={`transition-colors ${isHovered ? 'brightness-125' : ''}`}
               />
 
-              {/* Exact Count Value above Bar when Toggle is ON */}
+              {/* Data Labels above Bar: Completed Jobs + Clients */}
               {showLabels && item.count > 0 && (
                 <text
                   x={x + barWidth / 2}
-                  y={y - 7}
+                  y={y - 6}
                   textAnchor="middle"
-                  className={`text-[11px] font-bold font-mono transition-opacity ${
-                    isSelected ? 'fill-emerald-300' : 'fill-zinc-300'
-                  }`}
+                  className="text-[9px] sm:text-[10px] font-mono select-none"
                 >
-                  {item.count}
+                  <tspan className="fill-emerald-300 font-bold">{item.count}</tspan>
+                  {item.clients > 0 && (
+                    <tspan className="fill-violet-300 font-semibold"> ({item.clients}c)</tspan>
+                  )}
                 </text>
               )}
 
-              {/* X-axis Day Label */}
+              {/* X-axis Label */}
               <text
                 x={x + barWidth / 2}
-                y={height - padding.bottom + 18}
+                y={height - padding.bottom + 16}
                 textAnchor="middle"
-                className={`text-[10px] font-medium transition-colors ${
+                className={`text-[9px] sm:text-[10px] font-medium transition-colors ${
                   isSelected ? 'fill-emerald-400 font-bold' : 'fill-zinc-400'
                 }`}
               >
                 {labelStr}
               </text>
-
-              {/* Bottom selection indicator dot */}
-              {isSelected && (
-                <circle
-                  cx={x + barWidth / 2}
-                  cy={height - padding.bottom + 26}
-                  r={2.5}
-                  fill="#10b981"
-                />
-              )}
             </g>
           );
         })}
 
-        {/* Floating Tooltip Card */}
+        {/* Client Stat Overlay Line */}
+        {clientLinePath && (
+          <path
+            d={clientLinePath}
+            fill="none"
+            stroke="#a855f7"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="pointer-events-none opacity-90"
+          />
+        )}
+
+        {/* Client Points on Overlay */}
+        {clientPoints.map((pt, idx) => (
+          <circle
+            key={`cp-${idx}`}
+            cx={pt.x}
+            cy={pt.y}
+            r={pt.clients > 0 ? 3 : 1.5}
+            fill={pt.clients > 0 ? '#c084fc' : '#52525b'}
+            stroke="#09090b"
+            strokeWidth="1"
+            className="pointer-events-none"
+          />
+        ))}
+
+        {/* Hover Tooltip Card */}
         {hoveredBar && (
-          <g transform={`translate(${hoveredBar.x}, ${hoveredBar.y})`}>
+          <g transform={`translate(${hoveredBar.x}, ${Math.max(padding.top + 25, hoveredBar.y)})`}>
             <rect
               x="-65"
-              y="-42"
+              y="-48"
               width="130"
-              height="38"
-              rx="8"
+              height="44"
+              rx="6"
               fill="#09090b"
-              stroke="#27272a"
-              strokeWidth="1.5"
-              className="drop-shadow-2xl"
+              stroke="#3f3f46"
+              strokeWidth="1"
+              className="drop-shadow-lg"
             />
-            <text x="0" y="-24" textAnchor="middle" className="text-[11px] fill-zinc-300 font-medium">
-              {hoveredBar.day}
+            <text x="0" y="-33" textAnchor="middle" className="text-[10px] fill-zinc-300 font-medium">
+              📅 {hoveredBar.day}
             </text>
-            <text x="0" y="-10" textAnchor="middle" className="text-[12px] font-bold fill-emerald-400 font-mono">
-              {hoveredBar.count} Completed
+            <text x="0" y="-19" textAnchor="middle" className="text-[11px] font-bold fill-emerald-400 font-mono">
+              ✅ {hoveredBar.count} Completed
+            </text>
+            <text x="0" y="-7" textAnchor="middle" className="text-[10px] font-semibold fill-violet-300 font-mono">
+              👥 {hoveredBar.clients} {hoveredBar.clients === 1 ? 'Client' : 'Clients'}
             </text>
           </g>
         )}
@@ -674,54 +703,61 @@ function HistogramChart({ data, showLabels, selectedDate, onSelectDate, hoveredB
 }
 
 // =========================================================================
-// SUBCOMPONENT: HOURLY CURVE CHART (All 24 Hours, Flowy Spline, Bold Points)
+// SUBCOMPONENT: HOURLY CURVE OVERLAY CHART (Fast 24-hr Spline & Client Line)
 // =========================================================================
-function HourlyCurveChart({ data, showLabels, hoveredHour, setHoveredHour, selectedTz }) {
+function HourlyCurveOverlayChart({ data, showLabels, hoveredHour, setHoveredHour, selectedTz }) {
   const containerRef = useRef(null);
   const [width, setWidth] = useState(1000);
 
   useEffect(() => {
     if (!containerRef.current) return;
     const observer = new ResizeObserver((entries) => {
-      if (entries[0]) setWidth(Math.max(750, entries[0].contentRect.width));
+      if (entries[0]) setWidth(Math.max(650, entries[0].contentRect.width));
     });
     observer.observe(containerRef.current);
     return () => observer.disconnect();
   }, []);
 
-  const height = 280;
-  const padding = { top: 40, right: 35, bottom: 55, left: 45 };
+  const height = 210;
+  const padding = { top: 25, right: 35, bottom: 35, left: 45 };
 
   const chartW = width - padding.left - padding.right;
   const chartH = height - padding.top - padding.bottom;
 
-  const maxVal = Math.max(5, ...data.map(d => d.count || 0));
-  const roundedMax = Math.ceil(maxVal * 1.25); // Headroom for bold numbers above points
+  const maxJobs = Math.max(5, ...data.map(d => d.count || 0));
+  const roundedMaxJobs = Math.ceil(maxJobs * 1.25);
 
-  // Generate 25 points along X: hours 0, 1, 2, ..., 24
-  // Hours 0..23 have data, 24 wraps or closes the day boundary
-  const points = data.map((d, i) => {
+  const maxClients = Math.max(1, ...data.map(d => d.clients || 0));
+  const roundedMaxClients = Math.ceil(maxClients * 1.25);
+
+  const getYJobs = (val) => chartH - (val / roundedMaxJobs) * chartH;
+  const getYClients = (val) => chartH - (val / roundedMaxClients) * chartH;
+
+  const jobPoints = data.map((d, i) => {
     const x = padding.left + (i / 23) * chartW;
-    const y = padding.top + chartH - ((d.count || 0) / roundedMax) * chartH;
+    const y = padding.top + getYJobs(d.count || 0);
     return { ...d, x, y };
   });
 
-  // Build flowy smooth cubic bezier curve path through points
+  const clientPoints = data.map((d, i) => {
+    const x = padding.left + (i / 23) * chartW;
+    const y = padding.top + getYClients(d.clients || 0);
+    return { ...d, x, y };
+  });
+
+  // Flowy bezier generator
   const createSmoothPath = (pts) => {
     if (pts.length === 0) return '';
     let path = `M ${pts[0].x} ${pts[0].y}`;
-
     for (let i = 0; i < pts.length - 1; i++) {
       const p0 = pts[Math.max(0, i - 1)];
       const p1 = pts[i];
       const p2 = pts[i + 1];
       const p3 = pts[Math.min(pts.length - 1, i + 2)];
 
-      // Tension factor for flowy bezier
       const tension = 0.2;
       const cp1x = p1.x + (p2.x - p0.x) * tension;
       const cp1y = p1.y + (p2.y - p0.y) * tension;
-
       const cp2x = p2.x - (p3.x - p1.x) * tension;
       const cp2y = p2.y - (p3.y - p1.y) * tension;
 
@@ -730,31 +766,18 @@ function HourlyCurveChart({ data, showLabels, hoveredHour, setHoveredHour, selec
     return path;
   };
 
-  const curveLinePath = createSmoothPath(points);
-
-  // Closed area path for luminous gradient fill underneath
-  const areaPath = points.length > 0
-    ? `${curveLinePath} L ${points[points.length - 1].x} ${padding.top + chartH} L ${points[0].x} ${padding.top + chartH} Z`
-    : '';
+  const jobLinePath = createSmoothPath(jobPoints);
+  const clientLinePath = createSmoothPath(clientPoints);
 
   return (
     <div ref={containerRef} className="w-full overflow-x-auto select-none">
       <svg width={width} height={height} className="overflow-visible">
-        <defs>
-          <linearGradient id="curveAreaGlow" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#06b6d4" stopOpacity="0.45" />
-            <stop offset="60%" stopColor="#06b6d4" stopOpacity="0.08" />
-            <stop offset="100%" stopColor="#06b6d4" stopOpacity="0.0" />
-          </linearGradient>
-          <filter id="pointGlow" x="-50%" y="-50%" width="200%" height="200%">
-            <feDropShadow dx="0" dy="0" stdDeviation="3" floodColor="#22d3ee" floodOpacity="0.8" />
-          </filter>
-        </defs>
+        {/* Horizontal Grid */}
+        {[0, 0.5, 1].map((pct, i) => {
+          const yJobVal = Math.round(roundedMaxJobs * pct);
+          const yClientVal = Math.round(roundedMaxClients * pct);
+          const yPos = padding.top + getYJobs(yJobVal);
 
-        {/* Horizontal Guidelines */}
-        {[0, 0.25, 0.5, 0.75, 1].map((pct, i) => {
-          const yVal = Math.round(roundedMax * pct);
-          const yPos = padding.top + chartH - (yVal / roundedMax) * chartH;
           return (
             <g key={i}>
               <line
@@ -763,104 +786,136 @@ function HourlyCurveChart({ data, showLabels, hoveredHour, setHoveredHour, selec
                 x2={width - padding.right}
                 y2={yPos}
                 stroke="#27272a"
-                strokeDasharray={pct === 0 ? '0' : '4 4'}
+                strokeDasharray={pct === 0 ? '0' : '3 3'}
               />
               <text
-                x={padding.left - 10}
-                y={yPos + 4}
+                x={padding.left - 6}
+                y={yPos + 3}
                 textAnchor="end"
                 className="text-[10px] fill-zinc-500 font-mono"
               >
-                {yVal}
+                {yJobVal}
+              </text>
+              <text
+                x={width - padding.right + 6}
+                y={yPos + 3}
+                textAnchor="start"
+                className="text-[10px] fill-violet-400/80 font-mono"
+              >
+                {yClientVal}c
               </text>
             </g>
           );
         })}
 
-        {/* All 24 Vertical Grid Lines */}
-        {points.map((p, i) => (
+        {/* 24 Vertical Grid Lines */}
+        {jobPoints.map((p, i) => (
           <line
             key={`grid-${i}`}
             x1={p.x}
             y1={padding.top}
             x2={p.x}
             y2={padding.top + chartH}
-            stroke="#1f1f23"
-            strokeDasharray="2 4"
+            stroke="#18181b"
+            strokeDasharray="2 3"
           />
         ))}
 
-        {/* Luminous Gradient Area Fill Under Curve */}
-        {areaPath && (
-          <path d={areaPath} fill="url(#curveAreaGlow)" className="transition-all duration-300" />
-        )}
-
-        {/* Flowy Smooth Line Curve */}
-        {curveLinePath && (
+        {/* Curve Line: Jobs (Cyan) */}
+        {jobLinePath && (
           <path
-            d={curveLinePath}
+            d={jobLinePath}
             fill="none"
             stroke="#22d3ee"
-            strokeWidth="3"
+            strokeWidth="2.5"
             strokeLinecap="round"
             strokeLinejoin="round"
-            className="filter drop-shadow-[0_2px_8px_rgba(34,211,238,0.4)]"
           />
         )}
 
-        {/* Points & Labels for Every Hour */}
-        {points.map((p, idx) => {
+        {/* Curve Line: Clients (Violet) */}
+        {clientLinePath && (
+          <path
+            d={clientLinePath}
+            fill="none"
+            stroke="#a855f7"
+            strokeWidth="2"
+            strokeDasharray="4 3"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="opacity-80"
+          />
+        )}
+
+        {/* Interactive Points along Curve */}
+        {jobPoints.map((p, idx) => {
+          const cp = clientPoints[idx];
           const isHovered = hoveredHour?.hour === p.hour;
+
           return (
             <g
-              key={`pt-${idx}`}
-              className="cursor-pointer group"
+              key={`hpt-${idx}`}
+              className="cursor-pointer"
               onMouseEnter={() => {
                 setHoveredHour({
                   hour: p.hour,
                   label: p.label,
                   displayRange: p.displayRange,
                   count: p.count,
+                  clients: cp?.clients || 0,
                   x: p.x,
                   y: p.y
                 });
               }}
               onMouseLeave={() => setHoveredHour(null)}
             >
-              {/* Invisible wider hit region */}
-              <circle cx={p.x} cy={p.y} r={12} fill="transparent" />
+              {/* Hit region */}
+              <circle cx={p.x} cy={p.y} r={10} fill="transparent" />
 
-              {/* Bold Point along the Curve */}
+              {/* Bold Point on Jobs Curve */}
               <circle
                 cx={p.x}
                 cy={p.y}
-                r={isHovered ? 6.5 : (p.count > 0 ? 4.5 : 3)}
+                r={isHovered ? 5.5 : (p.count > 0 ? 4 : 2.5)}
                 fill={p.count > 0 ? '#22d3ee' : '#71717a'}
                 stroke="#09090b"
-                strokeWidth={isHovered ? 2.5 : 2}
-                filter={p.count > 0 ? 'url(#pointGlow)' : undefined}
-                className="transition-all duration-150"
+                strokeWidth={1.5}
               />
 
-              {/* Persistent Exact Count displayed above Point when Toggle is ON */}
+              {/* Dot on Client Curve */}
+              {cp && cp.clients > 0 && (
+                <circle
+                  cx={cp.x}
+                  cy={cp.y}
+                  r={2.5}
+                  fill="#c084fc"
+                  stroke="#09090b"
+                  strokeWidth="1"
+                />
+              )}
+
+              {/* Persistent Labels: Completed Jobs + Clients */}
               {showLabels && p.count > 0 && (
                 <text
                   x={p.x}
-                  y={p.y - 10}
+                  y={p.y - 7}
                   textAnchor="middle"
-                  className="text-[11px] font-bold font-mono fill-cyan-300 drop-shadow-md"
+                  className="text-[9px] sm:text-[10px] font-mono select-none"
                 >
-                  {p.count}
+                  <tspan className="fill-cyan-300 font-bold">{p.count}</tspan>
+                  {p.clients > 0 && (
+                    <tspan className="fill-violet-300 font-semibold"> ({p.clients}c)</tspan>
+                  )}
                 </text>
               )}
 
-              {/* ALL 24 HOURS EXPLICITLY WRITTEN BELOW ALONG X-AXIS */}
+              {/* 24-Hour X-axis text */}
               <text
                 x={p.x}
-                y={height - padding.bottom + 18}
+                y={height - padding.bottom + 16}
                 textAnchor="middle"
-                className={`text-[9px] sm:text-[10px] font-mono transition-colors ${
-                  isHovered ? 'fill-cyan-300 font-bold' : (p.count > 0 ? 'fill-zinc-300 font-semibold' : 'fill-zinc-500')
+                className={`text-[9px] font-mono transition-colors ${
+                  isHovered ? 'fill-cyan-300 font-bold' : (p.count > 0 ? 'fill-zinc-300' : 'fill-zinc-500')
                 }`}
               >
                 {p.label}
@@ -869,35 +924,38 @@ function HourlyCurveChart({ data, showLabels, hoveredHour, setHoveredHour, selec
           );
         })}
 
-        {/* 24:00 Final Endpoint Marker on X-axis */}
+        {/* 24:00 Final Endpoint */}
         <text
-          x={padding.left + chartW + 12}
-          y={height - padding.bottom + 18}
+          x={padding.left + chartW + 10}
+          y={height - padding.bottom + 16}
           textAnchor="middle"
-          className="text-[9px] sm:text-[10px] font-mono fill-zinc-500"
+          className="text-[9px] font-mono fill-zinc-500"
         >
           24:00
         </text>
 
-        {/* Floating Tooltip Card for Hourly Point */}
+        {/* Hover Tooltip Card */}
         {hoveredHour && (
-          <g transform={`translate(${hoveredHour.x}, ${Math.max(padding.top + 20, hoveredHour.y - 12)})`}>
+          <g transform={`translate(${hoveredHour.x}, ${Math.max(padding.top + 25, hoveredHour.y - 12)})`}>
             <rect
               x="-75"
-              y="-46"
+              y="-50"
               width="150"
-              height="42"
-              rx="8"
+              height="46"
+              rx="6"
               fill="#09090b"
               stroke="#3f3f46"
-              strokeWidth="1.5"
-              className="drop-shadow-2xl"
+              strokeWidth="1"
+              className="drop-shadow-lg"
             />
-            <text x="0" y="-28" textAnchor="middle" className="text-[11px] fill-zinc-300 font-medium">
+            <text x="0" y="-35" textAnchor="middle" className="text-[10px] fill-zinc-300 font-medium">
               🕒 {hoveredHour.displayRange} ({selectedTz})
             </text>
-            <text x="0" y="-12" textAnchor="middle" className="text-[12px] font-bold fill-cyan-400 font-mono">
+            <text x="0" y="-21" textAnchor="middle" className="text-[11px] font-bold fill-cyan-400 font-mono">
               ✅ {hoveredHour.count} Completed Jobs
+            </text>
+            <text x="0" y="-8" textAnchor="middle" className="text-[10px] font-semibold fill-violet-300 font-mono">
+              👥 {hoveredHour.clients} {hoveredHour.clients === 1 ? 'Client' : 'Clients'}
             </text>
           </g>
         )}
