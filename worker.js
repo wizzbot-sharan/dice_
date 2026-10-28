@@ -1487,6 +1487,75 @@ function getTimeFilter(from, to, tzKey, startIdx = 1) {
     };
 }
 
+// --- ANALYTICS APIS FOR GRAPHS ---
+app.get('/api/analytics/daily', async (req, res) => {
+    try {
+        const { from, to, tz = 'IST' } = req.query;
+        const tzName = TZ_MAP[tz] || 'Asia/Kolkata';
+
+        let timeCondition = "status = 'Completed'";
+        const params = [tzName];
+        if (from && to) {
+            timeCondition += ` AND (time AT TIME ZONE 'UTC' AT TIME ZONE $1) >= $2::timestamp AND (time AT TIME ZONE 'UTC' AT TIME ZONE $1) <= $3::timestamp`;
+            params.push(from, to);
+        }
+
+        const rows = await queryDB(`
+            SELECT 
+                TO_CHAR((time AT TIME ZONE 'UTC' AT TIME ZONE $1), 'YYYY-MM-DD') as day,
+                COUNT(*)::int as count
+            FROM dicev2_applied_jobs
+            WHERE ${timeCondition}
+            GROUP BY day
+            ORDER BY day ASC
+        `, params);
+
+        res.json(rows);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/analytics/hourly', async (req, res) => {
+    try {
+        const { date, tz = 'IST' } = req.query;
+        if (!date) {
+            return res.status(400).json({ error: 'date query parameter is required (YYYY-MM-DD)' });
+        }
+        const tzName = TZ_MAP[tz] || 'Asia/Kolkata';
+
+        const rows = await queryDB(`
+            SELECT 
+                EXTRACT(HOUR FROM (time AT TIME ZONE 'UTC' AT TIME ZONE $1))::int as hour,
+                COUNT(*)::int as count
+            FROM dicev2_applied_jobs
+            WHERE status = 'Completed'
+              AND (time AT TIME ZONE 'UTC' AT TIME ZONE $1)::date = $2::date
+            GROUP BY hour
+            ORDER BY hour ASC
+        `, [tzName, date]);
+
+        const countsByHour = {};
+        for (const r of rows) {
+            countsByHour[r.hour] = r.count;
+        }
+
+        const hourlyData = [];
+        for (let h = 0; h < 24; h++) {
+            hourlyData.push({
+                hour: h,
+                label: `${h}:00`,
+                displayRange: `${h}:00 - ${h + 1}:00`,
+                count: countsByHour[h] || 0
+            });
+        }
+
+        res.json(hourlyData);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.get('/api/stats', async (req, res) => {
     try {
         const { from, to, tz = 'IST' } = req.query;

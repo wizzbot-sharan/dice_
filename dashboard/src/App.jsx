@@ -49,6 +49,7 @@ import {
   Globe,
   Archive
 } from 'lucide-react';
+import GraphsModal from './components/GraphsModal.jsx';
 
 function App() {
   // Authentication State
@@ -59,6 +60,9 @@ function App() {
   const [loginPass, setLoginPass] = useState('');
   const [loginError, setLoginError] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  // Graphs & Analytics Modal State
+  const [isGraphsModalOpen, setIsGraphsModalOpen] = useState(false);
 
   // Supported Timezones (Default: IST)
   const TIMEZONE_OPTIONS = [
@@ -844,6 +848,17 @@ function App() {
                 {formatFriendly(toDate)}
               </span>
               <Calendar className="w-3.5 h-3.5 text-blue-400 ml-0.5" />
+            </button>
+
+            {/* Green Graphs Modal Button */}
+            <button
+              type="button"
+              onClick={() => setIsGraphsModalOpen(true)}
+              className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-medium rounded-xl px-3 py-1.5 text-xs shadow-md shadow-emerald-950/40 transition-all cursor-pointer"
+              title="Open Performance Analytics & Graphs"
+            >
+              <BarChart3 className="w-3.5 h-3.5 text-emerald-100" />
+              <span>Graphs</span>
             </button>
 
             {/* Timezone Selector Dropdown */}
@@ -2032,6 +2047,13 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* Fullscreen Analytics Graphs Modal */}
+      <GraphsModal
+        isOpen={isGraphsModalOpen}
+        onClose={() => setIsGraphsModalOpen(false)}
+        selectedTz={selectedTz}
+      />
 
     </div>
   );
