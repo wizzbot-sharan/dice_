@@ -733,14 +733,15 @@ function HourlyCurveOverlayChart({ data, showLabels, hoveredHour, setHoveredHour
   const getYJobs = (val) => chartH - (val / roundedMaxJobs) * chartH;
   const getYClients = (val) => chartH - (val / roundedMaxClients) * chartH;
 
+  const totalDivisions = Math.max(1, data.length - 1);
   const jobPoints = data.map((d, i) => {
-    const x = padding.left + (i / 23) * chartW;
+    const x = padding.left + (i / totalDivisions) * chartW;
     const y = padding.top + getYJobs(d.count || 0);
     return { ...d, x, y };
   });
 
   const clientPoints = data.map((d, i) => {
-    const x = padding.left + (i / 23) * chartW;
+    const x = padding.left + (i / totalDivisions) * chartW;
     const y = padding.top + getYClients(d.clients || 0);
     return { ...d, x, y };
   });
@@ -924,23 +925,13 @@ function HourlyCurveOverlayChart({ data, showLabels, hoveredHour, setHoveredHour
           );
         })}
 
-        {/* 24:00 Final Endpoint */}
-        <text
-          x={padding.left + chartW + 10}
-          y={height - padding.bottom + 16}
-          textAnchor="middle"
-          className="text-[9px] font-mono fill-zinc-500"
-        >
-          24:00
-        </text>
-
         {/* Hover Tooltip Card */}
         {hoveredHour && (
           <g transform={`translate(${hoveredHour.x}, ${Math.max(padding.top + 25, hoveredHour.y - 12)})`}>
             <rect
-              x="-75"
+              x="-80"
               y="-50"
-              width="150"
+              width="160"
               height="46"
               rx="6"
               fill="#09090b"

@@ -1544,14 +1544,23 @@ app.get('/api/analytics/hourly', async (req, res) => {
             statsByHour[r.hour] = { count: r.count, clients: r.clients };
         }
 
-        const hourlyData = [];
-        for (let h = 0; h < 24; h++) {
+        const hourlyData = [
+            {
+                hour: 0,
+                label: '0:00',
+                displayRange: '0:00 (Start of Day)',
+                count: 0,
+                clients: 0
+            }
+        ];
+        for (let h = 1; h <= 24; h++) {
+            const sqlHour = h - 1;
             hourlyData.push({
                 hour: h,
                 label: `${h}:00`,
-                displayRange: `${h}:00 - ${h + 1}:00`,
-                count: statsByHour[h]?.count || 0,
-                clients: statsByHour[h]?.clients || 0
+                displayRange: `${sqlHour}:00 - ${h}:00`,
+                count: statsByHour[sqlHour]?.count || 0,
+                clients: statsByHour[sqlHour]?.clients || 0
             });
         }
 
@@ -1559,6 +1568,219 @@ app.get('/api/analytics/hourly', async (req, res) => {
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
+});
+
+// --- UNIFIED GRAPH DATA API (JSON & XML BY URL EXTENSION) ---
+async function handleGraphData(req, res, format = 'json') {
+    try {
+        const tz = (req.query.tz || 'IST').toUpperCase();
+        const tzName = TZ_MAP[tz] || 'Asia/Kolkata';
+
+        // Current date in target timezone (YYYY-MM-DD)
+        const todayStr = new Intl.DateTimeFormat('en-CA', {
+            timeZone: tzName,
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit'
+        }).format(new Date());
+
+        // Default range: 1st of current month to today
+        const defaultFrom = todayStr.slice(0, 8) + '01';
+        const fromStr = (req.query.from || defaultFrom).slice(0, 10);
+        const toStr = (req.query.to || todayStr).slice(0, 10);
+
+        // Target date for hourly graph: defaults to today
+        const targetDate = (req.query.date || req.query.hourly_date || todayStr).slice(0, 10);
+
+        // 1. Daily Histogram Data
+        const dailyRows = await queryDB(`
+            SELECT 
+                TO_CHAR((time AT TIME ZONE 'UTC' AT TIME ZONE $1), 'YYYY-MM-DD') as day,
+                COUNT(*)::int as count,
+                COUNT(DISTINCT applywizz_id)::int as clients
+            FROM dicev2_applied_jobs
+            WHERE status = 'Completed'
+              AND (time AT TIME ZONE 'UTC' AT TIME ZONE $1) >= $2::timestamp
+              AND (time AT TIME ZONE 'UTC' AT TIME ZONE $1) <= $3::timestamp
+            GROUP BY day
+            ORDER BY day ASC
+        `, [tzName, `${fromStr} 00:00:00`, `${toStr} 23:59:59`]);
+
+        const dailyMap = new Map();
+        for (const r of dailyRows) {
+            dailyMap.set(r.day, { count: r.count, clients: r.clients });
+        }
+
+        // Fill continuous days
+        const populatedDaily = [];
+        const [sy, sm, sd] = fromStr.split('-').map(Number);
+        const [ey, em, ed] = toStr.split('-').map(Number);
+        let curr = new Date(sy, sm - 1, sd, 12, 0, 0);
+        const end = new Date(ey, em - 1, ed, 12, 0, 0);
+
+        let totalCompletedJobs = 0;
+        let peakDay = { date: null, completedJobs: 0, activeClients: 0 };
+
+        while (curr <= end) {
+            const y = curr.getFullYear();
+            const m = String(curr.getMonth() + 1).padStart(2, '0');
+            const d = String(curr.getDate()).padStart(2, '0');
+            const dStr = `${y}-${m}-${d}`;
+            const entry = dailyMap.get(dStr) || { count: 0, clients: 0 };
+
+            totalCompletedJobs += entry.count;
+            if (entry.count > peakDay.completedJobs) {
+                peakDay = { date: dStr, completedJobs: entry.count, activeClients: entry.clients };
+            }
+
+            populatedDaily.push({
+                date: dStr,
+                completedJobs: entry.count,
+                activeClients: entry.clients
+            });
+            curr.setDate(curr.getDate() + 1);
+        }
+
+        // 2. Unique Clients Count across the range
+        const totalClientsRow = await queryDB(`
+            SELECT COUNT(DISTINCT applywizz_id)::int as total_clients
+            FROM dicev2_applied_jobs
+            WHERE status = 'Completed'
+              AND (time AT TIME ZONE 'UTC' AT TIME ZONE $1) >= $2::timestamp
+              AND (time AT TIME ZONE 'UTC' AT TIME ZONE $1) <= $3::timestamp
+        `, [tzName, `${fromStr} 00:00:00`, `${toStr} 23:59:59`]);
+        const totalUniqueClients = totalClientsRow[0]?.total_clients || 0;
+
+        // 3. Hourly 24-Hour Distribution for targetDate
+        const hourlyRows = await queryDB(`
+            SELECT 
+                EXTRACT(HOUR FROM (time AT TIME ZONE 'UTC' AT TIME ZONE $1))::int as hour,
+                COUNT(*)::int as count,
+                COUNT(DISTINCT applywizz_id)::int as clients
+            FROM dicev2_applied_jobs
+            WHERE status = 'Completed'
+              AND (time AT TIME ZONE 'UTC' AT TIME ZONE $1)::date = $2::date
+            GROUP BY hour
+            ORDER BY hour ASC
+        `, [tzName, targetDate]);
+
+        const hourlyMap = {};
+        for (const r of hourlyRows) {
+            hourlyMap[r.hour] = { count: r.count, clients: r.clients };
+        }
+
+        let totalHourlyJobs = 0;
+        let peakHour = { hour: '0:00', timeRange: '0:00', completedJobs: 0, activeClients: 0 };
+        const hours = [
+            {
+                hour: 0,
+                label: '0:00',
+                timeRange: '0:00 (Start of Day)',
+                completedJobs: 0,
+                activeClients: 0
+            }
+        ];
+        for (let h = 1; h <= 24; h++) {
+            const sqlHour = h - 1;
+            const hCount = hourlyMap[sqlHour]?.count || 0;
+            const hClients = hourlyMap[sqlHour]?.clients || 0;
+            totalHourlyJobs += hCount;
+
+            if (hCount > peakHour.completedJobs) {
+                peakHour = { hour: `${h}:00`, timeRange: `${sqlHour}:00 - ${h}:00`, completedJobs: hCount, activeClients: hClients };
+            }
+
+            hours.push({
+                hour: h,
+                label: `${h}:00`,
+                timeRange: `${sqlHour}:00 - ${h}:00`,
+                completedJobs: hCount,
+                activeClients: hClients
+            });
+        }
+
+        const dailyDaysCount = populatedDaily.length || 1;
+        const dailyAverageJobs = parseFloat((totalCompletedJobs / dailyDaysCount).toFixed(1));
+        const nowIso = new Date().toISOString();
+
+        if (format === 'xml') {
+            const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<Analytics timezone="${tz}" generatedAt="${nowIso}">
+  <Parameters>
+    <From>${fromStr}</From>
+    <To>${toStr}</To>
+    <Date>${targetDate}</Date>
+    <Timezone>${tz}</Timezone>
+  </Parameters>
+  <Summary>
+    <TotalCompletedJobs>${totalCompletedJobs}</TotalCompletedJobs>
+    <TotalUniqueClients>${totalUniqueClients}</TotalUniqueClients>
+    <DailyAverageJobs>${dailyAverageJobs}</DailyAverageJobs>
+    <PeakDay date="${peakDay.date || ''}" completedJobs="${peakDay.completedJobs}" activeClients="${peakDay.activeClients}" />
+  </Summary>
+  <DailyHistogram from="${fromStr}" to="${toStr}" totalDays="${populatedDaily.length}">
+${populatedDaily.map(d => `    <Day date="${d.date}">
+      <CompletedJobs>${d.completedJobs}</CompletedJobs>
+      <ActiveClients>${d.activeClients}</ActiveClients>
+    </Day>`).join('\n')}
+  </DailyHistogram>
+  <HourlyDistribution date="${targetDate}" totalJobs="${totalHourlyJobs}">
+    <PeakHour hour="${peakHour.hour}" completedJobs="${peakHour.completedJobs}" activeClients="${peakHour.activeClients}" />
+${hours.map(h => `    <Hour index="${h.hour}" label="${h.label}" timeRange="${h.timeRange}">
+      <CompletedJobs>${h.completedJobs}</CompletedJobs>
+      <ActiveClients>${h.activeClients}</ActiveClients>
+    </Hour>`).join('\n')}
+  </HourlyDistribution>
+</Analytics>`;
+
+            res.type('application/xml');
+            return res.send(xml);
+        }
+
+        // Default: JSON response
+        return res.json({
+            success: true,
+            timezone: tz,
+            generatedAt: nowIso,
+            parameters: {
+                from: fromStr,
+                to: toStr,
+                date: targetDate,
+                tz
+            },
+            summary: {
+                totalCompletedJobs,
+                totalUniqueClients,
+                dailyAverageJobs,
+                peakDay: peakDay.completedJobs > 0 ? peakDay : null
+            },
+            dailyHistogram: {
+                from: fromStr,
+                to: toStr,
+                totalDays: populatedDaily.length,
+                days: populatedDaily
+            },
+            hourlyDistribution: {
+                date: targetDate,
+                totalJobs: totalHourlyJobs,
+                peakHour: peakHour.completedJobs > 0 ? peakHour : null,
+                hours
+            }
+        });
+    } catch (err) {
+        if (format === 'xml') {
+            res.type('application/xml');
+            return res.status(500).send(`<?xml version="1.0" encoding="UTF-8"?><Error><Message>${err.message}</Message></Error>`);
+        }
+        res.status(500).json({ error: err.message });
+    }
+}
+
+app.get('/api/analytics/graph-data.json', (req, res) => handleGraphData(req, res, 'json'));
+app.get('/api/analytics/graph-data.xml', (req, res) => handleGraphData(req, res, 'xml'));
+app.get('/api/analytics/graph-data', (req, res) => {
+    const format = req.query.format === 'xml' ? 'xml' : 'json';
+    return handleGraphData(req, res, format);
 });
 
 app.get('/api/stats', async (req, res) => {
