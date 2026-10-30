@@ -1026,7 +1026,7 @@ async function pollAndIngestNewJobs() {
 
 // --- INITIALIZATION ---
 async function initializeDatabase() {
-    sysLog('Initializing Azure PostgreSQL tables if not exist...');
+    sysLog('Initializing PostgreSQL tables if not exist...');
     await queryDB(`
         CREATE TABLE IF NOT EXISTS dicev2_sessions (
             email_id VARCHAR PRIMARY KEY,
