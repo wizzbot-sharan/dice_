@@ -422,9 +422,12 @@ async function fetchMessageDetails(email_id, accountId, msg) {
 }
 
 async function findMatchingZohoEmail(email_id, jobName, company, submissionTimeMs) {
-    const targetFrom = 'applyonline@dice.com';
     const normJob = normalizeText(jobName);
-    const cleanComp = cleanCompanyName(company);
+    const coreJob = (jobName || '').split(/[-–—(\[/:]/)[0].trim();
+    const normCoreJob = coreJob.length >= 4 ? normalizeText(coreJob) : '';
+
+    const normCleanComp = normalizeText(cleanCompanyName(company));
+    const normRawComp = normalizeText(company);
 
     const inboxUrl = `https://zoho-mail-reader.onrender.com/api/zoho/ui/inbox?email=${encodeURIComponent(email_id)}&limit=10&start=1`;
     const inboxRes = await fetchZohoWithWaitAndRetry(inboxUrl);
@@ -434,10 +437,11 @@ async function findMatchingZohoEmail(email_id, jobName, company, submissionTimeM
     const accountId = inboxData.accountId;
     const messages = inboxData.messages || [];
 
-    // Filter by sender and submission timestamp window (with 2 min buffer)
-    const bufferMs = 120000;
+    // Filter by sender and submission timestamp window (with 5 min buffer)
+    const bufferMs = 5 * 60 * 1000;
     const diceMessages = messages.filter(msg => {
-        const isFromDice = msg.from && msg.from.includes(targetFrom);
+        const fromLower = (msg.from || '').toLowerCase();
+        const isFromDice = fromLower.includes('applyonline@dice.com') || fromLower.includes('@dice.com');
         const receivedMs = parseInt(msg.receivedTime || '0', 10);
         return isFromDice && receivedMs >= (submissionTimeMs - bufferMs);
     });
@@ -445,21 +449,32 @@ async function findMatchingZohoEmail(email_id, jobName, company, submissionTimeM
     for (const msg of diceMessages) {
         const normSubject = normalizeText(msg.subject);
 
-        // Tier 1: Check if Subject contains both clean Company AND Job Title
-        const subjectHasComp = cleanComp ? normSubject.includes(cleanComp) : true;
-        const subjectHasJob = normJob ? normSubject.includes(normJob) : true;
+        // Tier 1: Check if Subject contains clean/raw Company AND Job Title (full or core)
+        const subjectHasComp = (!normCleanComp && !normRawComp)
+            || (normCleanComp && normSubject.includes(normCleanComp))
+            || (normRawComp && normSubject.includes(normRawComp));
+
+        const subjectHasJob = !normJob
+            || normSubject.includes(normJob)
+            || (normCoreJob && normSubject.includes(normCoreJob));
 
         if (subjectHasComp && subjectHasJob) {
             return await fetchMessageDetails(email_id, accountId, msg);
         }
 
-        // Tier 2 Fallback: If Subject matches clean company OR contains "application", inspect Body
+        // Tier 2 Fallback: If Subject matches company OR contains "application", inspect Body
         if (subjectHasComp || normSubject.includes('application')) {
             const fullReceipt = await fetchMessageDetails(email_id, accountId, msg);
             if (fullReceipt) {
                 const normBody = normalizeText(fullReceipt.text);
-                const bodyHasComp = cleanComp ? normBody.includes(cleanComp) : true;
-                const bodyHasJob = normJob ? normBody.includes(normJob) : true;
+                const bodyHasComp = (!normCleanComp && !normRawComp)
+                    || (normCleanComp && normBody.includes(normCleanComp))
+                    || (normRawComp && normBody.includes(normRawComp));
+
+                const bodyHasJob = !normJob
+                    || normBody.includes(normJob)
+                    || (normCoreJob && normBody.includes(normCoreJob));
+
                 if (bodyHasComp && (bodyHasJob || subjectHasJob)) {
                     return fullReceipt;
                 }
