@@ -1,23 +1,79 @@
 require('dotenv').config();
 const { chromium } = require('playwright');
-const { Client } = require('pg');
+const { Pool } = require('pg');
 const { S3Client, PutObjectCommand, GetObjectCommand } = require('@aws-sdk/client-s3');
 const cron = require('node-cron');
 const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 
-// --- DATABASE SETUP ---
+// --- DATABASE SETUP (CONNECTION POOL) ---
+let pool = null;
+if (process.env.DATABASE_URL) {
+    const isLocalhost = process.env.DATABASE_URL.includes('localhost') || process.env.DATABASE_URL.includes('127.0.0.1');
+    pool = new Pool({
+        connectionString: process.env.DATABASE_URL,
+        max: parseInt(process.env.DB_POOL_MAX, 10) || 15,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 10000,
+        ...(isLocalhost ? {} : { ssl: { rejectUnauthorized: false } })
+    });
+
+    pool.on('error', (err) => {
+        console.error('[DATABASE POOL ERROR] Unexpected error on idle client:', err.message);
+    });
+}
+
 async function queryDB(text, params) {
-    const client = new Client({ connectionString: process.env.DATABASE_URL });
-    await client.connect();
+    if (!pool) {
+        throw new Error('DATABASE_URL is not set or database pool is uninitialized.');
+    }
+    const client = await pool.connect();
     try {
         const res = await client.query(text, params);
         return res.rows;
     } finally {
-        await client.end();
+        client.release();
     }
 }
+
+// --- IN-MEMORY BATCH LOGGING ---
+let logBuffer = [];
+let isFlushingLogs = false;
+const LOG_FLUSH_INTERVAL_MS = 5000;
+const LOG_BUFFER_MAX_THRESHOLD = 50;
+const LOG_BATCH_CHUNK_SIZE = 100;
+
+async function flushLogs() {
+    if (!pool || logBuffer.length === 0 || isFlushingLogs) return;
+    isFlushingLogs = true;
+
+    try {
+        while (logBuffer.length > 0) {
+            const batch = logBuffer.splice(0, LOG_BATCH_CHUNK_SIZE);
+            if (batch.length === 0) break;
+
+            const values = [];
+            const flatParams = [];
+            let pIdx = 1;
+
+            for (const item of batch) {
+                values.push(`($${pIdx++}, $${pIdx++})`);
+                flatParams.push(item.applywizz_id, item.message);
+            }
+
+            const queryText = `INSERT INTO dicev2_logs (applywizz_id, message) VALUES ${values.join(', ')}`;
+            await queryDB(queryText, flatParams);
+        }
+    } catch (err) {
+        console.error('[LOG FLUSH ERROR] Failed to flush batch logs to DB:', err.message);
+    } finally {
+        isFlushingLogs = false;
+    }
+}
+
+// Periodic log flush timer (every 5 seconds)
+const logFlushTimer = setInterval(flushLogs, LOG_FLUSH_INTERVAL_MS);
 
 // --- AWS S3 SETUP ---
 let s3;
@@ -59,15 +115,21 @@ let isArchivingInProgress = false;
 function sysLog(msg) {
     const text = `[SYSTEM] ${msg}`;
     console.log(text);
-    if (process.env.DATABASE_URL) {
-        queryDB('INSERT INTO dicev2_logs (applywizz_id, message) VALUES ($1, $2)', ['SYSTEM', text]).catch(() => { });
+    if (pool) {
+        logBuffer.push({ applywizz_id: 'SYSTEM', message: text });
+        if (logBuffer.length >= LOG_BUFFER_MAX_THRESHOLD) {
+            flushLogs().catch(() => {});
+        }
     }
 }
 function log(applywizz_id, msg) {
     const text = `[${applywizz_id}] ${msg}`;
     console.log(text);
-    if (process.env.DATABASE_URL) {
-        queryDB('INSERT INTO dicev2_logs (applywizz_id, message) VALUES ($1, $2)', [applywizz_id, text]).catch(() => { });
+    if (pool) {
+        logBuffer.push({ applywizz_id: applywizz_id || 'UNKNOWN', message: text });
+        if (logBuffer.length >= LOG_BUFFER_MAX_THRESHOLD) {
+            flushLogs().catch(() => {});
+        }
     }
 }
 
@@ -2145,6 +2207,7 @@ app.get('/api/screenshot/:id', async (req, res) => {
 
 app.get('/api/logs', async (req, res) => {
     try {
+        await flushLogs();
         const logs = await queryDB(`
             SELECT * FROM dicev2_logs
             ORDER BY time DESC
@@ -2449,10 +2512,51 @@ cron.schedule('59 23 * * *', async () => {
     await syncLiveQueue();
     await syncMasterBacklog();
     await terminateJobRun('Daily 11:59 PM IST Hard Stop.');
+    await flushLogs();
 }, {
     timezone: 'Asia/Kolkata'
 });
 sysLog('Scheduled Daily Hard Stop at 11:59 PM IST.');
+
+// --- GRACEFUL PROCESS SHUTDOWN ---
+let isShuttingDown = false;
+async function gracefulShutdown(signal) {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+    console.log(`\n[SYSTEM] Received ${signal}. Starting graceful shutdown...`);
+
+    if (logFlushTimer) clearInterval(logFlushTimer);
+
+    try {
+        console.log('[SYSTEM] Flushing buffered logs to database...');
+        await flushLogs();
+        console.log('[SYSTEM] Buffered logs successfully flushed.');
+    } catch (err) {
+        console.error('[SYSTEM] Error flushing logs on shutdown:', err.message);
+    }
+
+    if (globalBrowser) {
+        try {
+            console.log('[SYSTEM] Closing browser...');
+            await globalBrowser.close();
+        } catch (_) {}
+    }
+
+    if (pool) {
+        try {
+            console.log('[SYSTEM] Draining database connection pool...');
+            await pool.end();
+            console.log('[SYSTEM] Database connection pool closed cleanly.');
+        } catch (err) {
+            console.error('[SYSTEM] Error closing database pool:', err.message);
+        }
+    }
+
+    process.exit(0);
+}
+
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
 if (process.env.CRON_SCHEDULE) {
     sysLog(`Starting Railway Node-Cron Scheduler: ${process.env.CRON_SCHEDULE}`);
