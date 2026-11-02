@@ -987,16 +987,100 @@ async function terminateJobRun(reason) {
     });
 }
 
+// --- AZURE SCRAPED JOBS SYNC ---
+let isAzureSyncing = false;
+async function syncScrapedJobsFromAzure(hoursBack = 24) {
+    if (!process.env.AZURE_DATABASE_URL) {
+        sysLog('[AZURE-SYNC] Notice: AZURE_DATABASE_URL is not set. Skipping sync.');
+        return { totalFetched: 0, insertedCount: 0, skipped: true };
+    }
+    if (isAzureSyncing) {
+        sysLog('[AZURE-SYNC] Sync already in progress. Skipping concurrent execution.');
+        return { inProgress: true };
+    }
+
+    isAzureSyncing = true;
+    const startTime = Date.now();
+    const azurePool = new Pool({
+        connectionString: process.env.AZURE_DATABASE_URL,
+        ssl: { rejectUnauthorized: false }
+    });
+
+    const COLS = [
+        'id', 'url', 'title', 'company', 'applywizz_id', 'company_email',
+        'scraped_at', 'preflight_status', 'description', 'location', 'job_type',
+        'scraped_experience', 'search_keyword', 'search_location', 'posted_at', 'updated_at'
+    ];
+
+    try {
+        sysLog(`[AZURE-SYNC] Pulling scraped jobs from Azure (past ${hoursBack} hours)...`);
+        const azureRes = await azurePool.query(`
+            SELECT ${COLS.join(', ')}
+            FROM dice_scraped_jobs
+            WHERE scraped_at > NOW() - INTERVAL '${parseInt(hoursBack, 10)} hours'
+            ORDER BY scraped_at ASC;
+        `);
+
+        const rows = azureRes.rows;
+        sysLog(`[AZURE-SYNC] Fetched ${rows.length} rows from Azure.`);
+        if (rows.length === 0) {
+            return { totalFetched: 0, insertedCount: 0, duration_seconds: 0 };
+        }
+
+        const BATCH_SIZE = 200;
+        let totalInserted = 0;
+
+        for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+            const chunk = rows.slice(i, i + BATCH_SIZE);
+            const valuesList = [];
+            const flatParams = [];
+            let pIdx = 1;
+
+            for (const row of chunk) {
+                const rowPlaceholders = [];
+                for (const col of COLS) {
+                    rowPlaceholders.push(`$${pIdx++}`);
+                    flatParams.push(row[col]);
+                }
+                valuesList.push(`(${rowPlaceholders.join(', ')})`);
+            }
+
+            const insertQuery = `
+                INSERT INTO dice_scraped_jobs (${COLS.join(', ')})
+                VALUES ${valuesList.join(', ')}
+                ON CONFLICT (url, applywizz_id) DO NOTHING
+                RETURNING id;
+            `;
+
+            const res = await queryDB(insertQuery, flatParams);
+            totalInserted += (res && res.length) ? res.length : 0;
+        }
+
+        const durationSeconds = ((Date.now() - startTime) / 1000).toFixed(1);
+        sysLog(`[AZURE-SYNC] Successfully synced ${totalInserted} new jobs (out of ${rows.length} fetched) into Supabase in ${durationSeconds}s.`);
+        return { totalFetched: rows.length, insertedCount: totalInserted, duration_seconds: durationSeconds };
+    } catch (err) {
+        sysLog(`[AZURE-SYNC] Error syncing from Azure: ${err.message}`);
+        return { totalFetched: 0, insertedCount: 0, error: err.message };
+    } finally {
+        await azurePool.end().catch(() => {});
+        isAzureSyncing = false;
+    }
+}
+
 async function pollAndIngestNewJobs() {
     if (!isRunActive || !isWithinOperatingHours()) return;
     try {
         sysLog('[POLLER] Running 30-minute background check for newly scraped jobs...');
+        if (process.env.AZURE_DATABASE_URL) {
+            await syncScrapedJobsFromAzure(24);
+        }
 
         const freshJobs = await queryDB(`
             SELECT d.url, d.applywizz_id, d.title as job_name, d.company, c.company_email as email_id
             FROM dice_scraped_jobs d
             JOIN clients_additional_info c ON d.applywizz_id = c.applywizz_id
-            WHERE d.scraped_at > NOW() - INTERVAL '12 hours'
+            WHERE d.scraped_at > NOW() - INTERVAL '24 hours'
               AND d.applywizz_id NOT IN (SELECT applywizz_id FROM trigger_client WHERE status = 'purged')
               AND NOT EXISTS (
                   SELECT 1 FROM dicev2_applied_jobs a 
@@ -1313,6 +1397,11 @@ async function startJobRun(isFresh = true) {
 
     await initializeDatabase();
     await queryDB('TRUNCATE TABLE dicev2_live_queue, dicev2_master_backlog');
+
+    // Ensure fresh scraped jobs from Azure are synced into Supabase before launching run
+    if (process.env.AZURE_DATABASE_URL) {
+        await syncScrapedJobsFromAzure(24);
+    }
 
     // 1. Fetch valid jobs < 24 hours old
     const rawJobs = await queryDB(`
@@ -2494,6 +2583,17 @@ app.post('/api/archive-scraped-jobs', async (req, res) => {
     }
 });
 
+// --- AZURE SCRAPED JOBS SYNC ENDPOINT ---
+app.all('/api/sync-scraped-jobs', async (req, res) => {
+    try {
+        const hoursBack = parseInt(req.query.hours || req.body?.hours || '24', 10);
+        const result = await syncScrapedJobsFromAzure(hoursBack);
+        res.json({ success: true, ...result });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
 app.use((req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
@@ -2532,6 +2632,16 @@ cron.schedule('59 23 * * *', async () => {
     timezone: 'Asia/Kolkata'
 });
 sysLog('Scheduled Daily Hard Stop at 11:59 PM IST.');
+
+// Schedule Daily Scraped Jobs Sync from Azure at 9:50 AM IST (Asia/Kolkata)
+cron.schedule('50 9 * * *', async () => {
+    if (!isScheduledDay()) return;
+    sysLog('[AZURE-SYNC] Triggering daily 9:50 AM IST scraped jobs sync from Azure...');
+    await syncScrapedJobsFromAzure(24);
+}, {
+    timezone: 'Asia/Kolkata'
+});
+sysLog('Scheduled Daily Scraped Jobs Sync from Azure at 9:50 AM IST.');
 
 // --- GRACEFUL PROCESS SHUTDOWN ---
 let isShuttingDown = false;

@@ -176,6 +176,7 @@ function App() {
   const [isTriggering, setIsTriggering] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isArchiving, setIsArchiving] = useState(false);
+  const [isSyncingAzure, setIsSyncingAzure] = useState(false);
 
   // --- AUTHENTICATION ---
   const handleLogin = async (e) => {
@@ -501,6 +502,24 @@ function App() {
     }
   };
 
+  const syncAzureJobs = async () => {
+    try {
+      setIsSyncingAzure(true);
+      const res = await fetch('/api/sync-scraped-jobs', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        alert(`Azure Sync Complete!\n\nFetched from Azure: ${data.totalFetched?.toLocaleString() || 0} jobs\nNew jobs inserted: ${data.insertedCount?.toLocaleString() || 0}\nDuration: ${data.duration_seconds || 'a few'}s.`);
+        fetchStats();
+      } else {
+        alert(`Azure Sync Failed: ${data.error || 'Server error occurred.'}`);
+      }
+    } catch (err) {
+      alert(`Network error during Azure sync: ${err.message}`);
+    } finally {
+      setIsSyncingAzure(false);
+    }
+  };
+
   const triggerAutomation = async () => {
     const action = window.prompt(
       "Choose automation run mode:\nType 'fresh' to reset 10-job limits to 0\nType 'resume' to continue existing run",
@@ -820,6 +839,17 @@ function App() {
             >
               <X className="w-3.5 h-3.5" />
               <span>Purge Queue</span>
+            </button>
+
+            {/* Sync Scraped Jobs from Azure */}
+            <button
+              onClick={syncAzureJobs}
+              disabled={isSyncingAzure}
+              className="px-3 py-1.5 bg-blue-950/40 hover:bg-blue-900/50 active:bg-blue-950/70 text-blue-300 border border-blue-800/60 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer shadow-sm"
+              title="Sync fresh scraped jobs from Azure (past 24 hours)"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isSyncingAzure ? 'animate-spin text-blue-200' : 'text-blue-400'}`} />
+              <span>{isSyncingAzure ? 'Syncing...' : 'Sync Azure Jobs'}</span>
             </button>
 
             {/* Archive Old Scraped Jobs */}
