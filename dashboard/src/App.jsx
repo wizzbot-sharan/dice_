@@ -47,7 +47,9 @@ import {
   ZoomIn,
   ZoomOut,
   Globe,
-  Archive
+  Archive,
+  RotateCcw,
+  Ban
 } from 'lucide-react';
 import GraphsModal from './components/GraphsModal.jsx';
 
@@ -168,6 +170,11 @@ function App() {
   // Per-Client Run State
   const [runningClients, setRunningClients] = useState({});
   const [clientToExtendRun, setClientToExtendRun] = useState(null);
+
+  // Blacklisted Clients State
+  const [blacklistedList, setBlacklistedList] = useState([]);
+  const [loadingBlacklist, setLoadingBlacklist] = useState(false);
+  const [actionInProgress, setActionInProgress] = useState({});
 
   // Failed Applications Filter ('all', 'app_error', 'preflight')
   const [errorFilter, setErrorFilter] = useState('all');
@@ -316,6 +323,18 @@ function App() {
     } catch (e) { }
   };
 
+  const fetchBlacklistedClients = async () => {
+    setLoadingBlacklist(true);
+    try {
+      const res = await fetch('/api/blacklisted-clients');
+      const data = await res.json();
+      setBlacklistedList(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error('Error fetching blacklisted clients:', err);
+    }
+    setLoadingBlacklist(false);
+  };
+
   const formatFriendly = (isoStr) => {
     if (!isoStr) return '';
     try {
@@ -434,6 +453,73 @@ function App() {
       });
     } finally {
       setRunningClients(prev => ({ ...prev, [applywizz_id]: false }));
+      setTimeout(() => setPurgeToast(null), 5000);
+    }
+  };
+
+  const handleBlacklistClient = async (applywizzId) => {
+    if (!window.confirm(`Blacklist client ${applywizzId}?\n\nThis will remove them from the active list, cancel any queued jobs, and prevent future automated applications until restored.`)) {
+      return;
+    }
+    setActionInProgress(prev => ({ ...prev, [applywizzId]: true }));
+    try {
+      const res = await fetch('/api/blacklisted-clients', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ applywizz_id: applywizzId })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setPurgeToast({
+          type: 'success',
+          message: `Client ${applywizzId} blacklisted and moved to Blacklisted Clients list.`
+        });
+        fetchBlacklistedClients();
+        fetchStats();
+      } else {
+        setPurgeToast({
+          type: 'error',
+          message: data.error || 'Failed to blacklist client.'
+        });
+      }
+    } catch (err) {
+      setPurgeToast({
+        type: 'error',
+        message: err.message || 'Network error while blacklisting client.'
+      });
+    } finally {
+      setActionInProgress(prev => ({ ...prev, [applywizzId]: false }));
+      setTimeout(() => setPurgeToast(null), 5000);
+    }
+  };
+
+  const handleRestoreClient = async (applywizzId) => {
+    setActionInProgress(prev => ({ ...prev, [applywizzId]: true }));
+    try {
+      const res = await fetch(`/api/blacklisted-clients/${encodeURIComponent(applywizzId)}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setPurgeToast({
+          type: 'success',
+          message: `Client ${applywizzId} restored! Added back to active client list.`
+        });
+        fetchBlacklistedClients();
+        fetchStats();
+      } else {
+        setPurgeToast({
+          type: 'error',
+          message: data.error || 'Failed to restore client.'
+        });
+      }
+    } catch (err) {
+      setPurgeToast({
+        type: 'error',
+        message: err.message || 'Network error while restoring client.'
+      });
+    } finally {
+      setActionInProgress(prev => ({ ...prev, [applywizzId]: false }));
       setTimeout(() => setPurgeToast(null), 5000);
     }
   };
@@ -560,6 +646,7 @@ function App() {
       fetchStats();
       fetchErrors();
       fetchLogs();
+      fetchBlacklistedClients();
       const interval = setInterval(fetchLogs, 4000);
       return () => clearInterval(interval);
     }
@@ -1059,9 +1146,10 @@ function App() {
         {/* 4. MAIN WORKSPACE (FULL WIDTH) */}
         <main className="w-full flex-1">
 
-          {/* SECTION 1: ALL STATS (DEFAULT VIEW - CLIENT LIST) */}
+          {/* SECTION 1: ALL STATS (DEFAULT VIEW - CLIENT LIST & BLACKLISTED LIST) */}
           {activeSection === 'all-stats' && (
-            <div className="bg-[#000000] border border-zinc-800 rounded-2xl shadow-xl overflow-hidden flex flex-col">
+            <div className="space-y-6">
+              <div className="bg-[#000000] border border-zinc-800 rounded-2xl shadow-xl overflow-hidden flex flex-col">
               <div className="px-6 py-4 border-b border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#000000]">
                 <div className="flex items-center gap-3">
                   {renderNavMenu("text-blue-400")}
@@ -1170,6 +1258,18 @@ function App() {
                                 <span>All Stats</span>
                                 <ChevronRight className="w-3.5 h-3.5" />
                               </button>
+                              <button
+                                onClick={() => handleBlacklistClient(client.applywizz_id)}
+                                disabled={actionInProgress[client.applywizz_id]}
+                                className="inline-flex items-center justify-center p-1.5 bg-zinc-900 hover:bg-red-950/60 text-zinc-400 hover:text-red-400 rounded-lg text-xs transition-all border border-zinc-800 hover:border-red-800/60 disabled:opacity-50"
+                                title={`Blacklist ${client.applywizz_id} (Exclude from all runs)`}
+                              >
+                                {actionInProgress[client.applywizz_id] ? (
+                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <span className="text-sm leading-none">🗑️</span>
+                                )}
+                              </button>
                             </div>
                           </td>
                         </tr>
@@ -1179,7 +1279,110 @@ function App() {
                 </table>
               </div>
             </div>
-          )}
+
+            {/* BLACKLISTED CLIENTS SECTION */}
+            <div className="bg-[#000000] border border-zinc-800 rounded-2xl shadow-xl overflow-hidden flex flex-col">
+              <div className="px-6 py-4 border-b border-zinc-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-[#000000]">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-red-500/10 border border-red-500/20 flex items-center justify-center text-red-400 shrink-0">
+                    <Ban className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-base font-semibold text-white tracking-tight">Blacklisted Clients</h2>
+                      <span className="px-2 py-0.5 text-xs font-semibold rounded-full bg-red-500/10 text-red-400 border border-red-500/20">
+                        {blacklistedList.length}
+                      </span>
+                    </div>
+                    <p className="text-xs text-zinc-400">
+                      These clients are excluded from morning cron, background pollers, and all automated job applications.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={fetchBlacklistedClients}
+                    disabled={loadingBlacklist}
+                    className="p-1.5 text-zinc-400 hover:text-white bg-zinc-900 border border-zinc-800 rounded-lg hover:bg-zinc-800 transition-colors"
+                    title="Refresh blacklist"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${loadingBlacklist ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto min-h-[140px]">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-[#000000] text-zinc-400 uppercase tracking-wider font-semibold border-b border-zinc-800">
+                    <tr>
+                      <th className="px-4 py-3.5 w-12 text-center text-zinc-500 font-mono">#</th>
+                      <th className="px-6 py-3.5">ApplyWizz ID</th>
+                      <th className="px-6 py-3.5">Company Email</th>
+                      <th className="px-6 py-3.5">Blacklisted At</th>
+                      <th className="px-6 py-3.5">Reason</th>
+                      <th className="px-6 py-3.5 text-right">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-zinc-800/60">
+                    {loadingBlacklist ? (
+                      <tr>
+                        <td colSpan="6" className="px-6 py-8 text-center text-zinc-500">
+                          <div className="inline-flex items-center gap-2">
+                            <RefreshCw className="w-4 h-4 animate-spin text-red-500" />
+                            <span>Loading blacklisted records...</span>
+                          </div>
+                        </td>
+                      </tr>
+                    ) : blacklistedList.length === 0 ? (
+                      <tr>
+                        <td colSpan="6" className="px-6 py-8 text-center text-zinc-500">
+                          No clients are currently blacklisted. All active clients are eligible for jobs.
+                        </td>
+                      </tr>
+                    ) : (
+                      blacklistedList.map((bClient, idx) => (
+                        <tr key={bClient.applywizz_id || idx} className="hover:bg-zinc-800/30 transition-colors">
+                          <td className="px-4 py-3.5 text-zinc-500 font-mono text-center font-medium">
+                            {idx + 1}
+                          </td>
+                          <td className="px-6 py-3.5 font-medium text-red-300 font-mono">
+                            {bClient.applywizz_id}
+                          </td>
+                          <td className="px-6 py-3.5 text-zinc-400">
+                            {bClient.company_email || <span className="text-zinc-600 italic">Not set</span>}
+                          </td>
+                          <td className="px-6 py-3.5 text-zinc-400">
+                            {formatInTz(bClient.created_at, selectedTz, 'datetime-short')}
+                          </td>
+                          <td className="px-6 py-3.5 text-zinc-400">
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-zinc-900 text-zinc-400 border border-zinc-800">
+                              {bClient.reason || 'Manually excluded'}
+                            </span>
+                          </td>
+                          <td className="px-6 py-3.5 text-right">
+                            <button
+                              onClick={() => handleRestoreClient(bClient.applywizz_id)}
+                              disabled={actionInProgress[bClient.applywizz_id]}
+                              className="inline-flex items-center gap-1.5 px-3 py-1 bg-emerald-950/40 hover:bg-emerald-900/60 text-emerald-400 hover:text-emerald-300 rounded-lg text-xs font-medium transition-all border border-emerald-800/60 disabled:opacity-50"
+                              title="Restore client (Return to active list and resume applications)"
+                            >
+                              {actionInProgress[bClient.applywizz_id] ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <RotateCcw className="w-3.5 h-3.5" />
+                              )}
+                              <span>Restore</span>
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
 
           {/* SECTION 2: ERRORS VIEW */}
           {activeSection === 'errors' && (

@@ -1082,6 +1082,7 @@ async function pollAndIngestNewJobs() {
             JOIN clients_additional_info c ON d.applywizz_id = c.applywizz_id
             WHERE d.scraped_at > NOW() - INTERVAL '24 hours'
               AND d.applywizz_id NOT IN (SELECT applywizz_id FROM trigger_client WHERE status = 'purged')
+              AND d.applywizz_id NOT IN (SELECT applywizz_id FROM dicev2_blacklisted_clients)
               AND NOT EXISTS (
                   SELECT 1 FROM dicev2_applied_jobs a 
                   WHERE a.url = d.url AND a.applywizz_id = d.applywizz_id
@@ -1102,6 +1103,7 @@ async function pollAndIngestNewJobs() {
         for (const row of freshJobs) {
             if (existingUrls.has(row.url)) continue;
             if (purgedClientsToday.has(row.applywizz_id)) continue;
+            if (blacklistedClients.has(row.applywizz_id)) continue;
             if ((clientSuccessCounts[row.applywizz_id] || 0) >= 10) continue;
             if (fatalLoginClients.has(row.applywizz_id)) continue;
 
@@ -1234,7 +1236,25 @@ async function initializeDatabase() {
             status VARCHAR,
             triggered_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
         );
+        CREATE TABLE IF NOT EXISTS dicev2_blacklisted_clients (
+            applywizz_id VARCHAR PRIMARY KEY,
+            reason TEXT DEFAULT 'Manually excluded',
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
     `);
+
+    try {
+        const blRows = await queryDB("SELECT applywizz_id FROM dicev2_blacklisted_clients");
+        blacklistedClients.clear();
+        for (const r of blRows) {
+            blacklistedClients.add(r.applywizz_id);
+        }
+        if (blacklistedClients.size > 0) {
+            sysLog(`Loaded ${blacklistedClients.size} blacklisted client(s) into memory: ${Array.from(blacklistedClients).join(', ')}`);
+        }
+    } catch (e) {
+        sysLog(`Warning: Failed to load blacklisted clients on startup: ${e.message}`);
+    }
 
     try {
         const purgedRows = await queryDB("SELECT applywizz_id FROM trigger_client WHERE status = 'purged'");
@@ -1251,6 +1271,7 @@ async function initializeDatabase() {
 
 let clientSuccessCounts = {};
 const purgedClientsToday = new Set();
+const blacklistedClients = new Set();
 
 async function getTodayClientCompletedCount(applywizz_id) {
     try {
@@ -1305,6 +1326,7 @@ async function startJobRun(isFresh = true) {
             FROM dice_scraped_jobs d
             JOIN clients_additional_info c ON d.applywizz_id = c.applywizz_id
             WHERE d.applywizz_id NOT IN (SELECT applywizz_id FROM trigger_client)
+              AND d.applywizz_id NOT IN (SELECT applywizz_id FROM dicev2_blacklisted_clients)
               AND d.scraped_at > NOW() - INTERVAL '24 hours'
               AND NOT EXISTS (
                   SELECT 1 FROM dicev2_applied_jobs a 
@@ -1409,6 +1431,7 @@ async function startJobRun(isFresh = true) {
         FROM dice_scraped_jobs d
         JOIN clients_additional_info c ON d.applywizz_id = c.applywizz_id
         WHERE d.scraped_at > NOW() - INTERVAL '24 hours'
+          AND d.applywizz_id NOT IN (SELECT applywizz_id FROM dicev2_blacklisted_clients)
           AND NOT EXISTS (
               SELECT 1 FROM dicev2_applied_jobs a 
               WHERE a.url = d.url AND a.applywizz_id = d.applywizz_id
@@ -1520,6 +1543,10 @@ async function pollClientStatusApi() {
                 break;
             }
             const uid = clientItem.applywizz_id;
+            if (blacklistedClients.has(uid)) {
+                sysLog(`[STATUS-POLLER] Client ${uid} is blacklisted. Skipping.`);
+                continue;
+            }
             const todayCount = await getTodayClientCompletedCount(uid);
             clientSuccessCounts[uid] = Math.max(clientSuccessCounts[uid] || 0, todayCount);
 
@@ -1963,7 +1990,7 @@ app.get('/api/stats', async (req, res) => {
         // 1. Distinct active clients directly from clients_additional_info
         let activeClientsCount = 0;
         try {
-            const activeRes = await queryDB("SELECT COUNT(DISTINCT applywizz_id) as count FROM clients_additional_info WHERE applywizz_id IS NOT NULL");
+            const activeRes = await queryDB("SELECT COUNT(DISTINCT applywizz_id) as count FROM clients_additional_info WHERE applywizz_id IS NOT NULL AND applywizz_id NOT IN (SELECT applywizz_id FROM dicev2_blacklisted_clients)");
             activeClientsCount = parseInt(activeRes[0]?.count || 0, 10);
         } catch (e) {
             console.error("Error fetching active clients count:", e.message);
@@ -1994,6 +2021,7 @@ app.get('/api/stats', async (req, res) => {
             FROM clients_additional_info c
             FULL OUTER JOIN client_jobs j ON c.applywizz_id = j.applywizz_id
             WHERE COALESCE(c.applywizz_id, j.applywizz_id) IS NOT NULL
+              AND COALESCE(c.applywizz_id, j.applywizz_id) NOT IN (SELECT applywizz_id FROM dicev2_blacklisted_clients)
             ORDER BY completed_count DESC, failed_count DESC, applywizz_id ASC
         `, params);
 
@@ -2134,12 +2162,121 @@ app.post('/api/purge-client', async (req, res) => {
     }
 });
 
+// --- BLACKLIST MANAGEMENT ENDPOINTS ---
+app.get('/api/blacklisted-clients', async (req, res) => {
+    try {
+        const rows = await queryDB(`
+            SELECT 
+                b.applywizz_id,
+                b.reason,
+                b.created_at,
+                COALESCE(c.company_email, '') as company_email
+            FROM dicev2_blacklisted_clients b
+            LEFT JOIN clients_additional_info c ON b.applywizz_id = c.applywizz_id
+            ORDER BY b.created_at DESC
+        `);
+        res.json(rows);
+    } catch (err) {
+        sysLog(`ERROR fetching blacklisted clients: ${err.message}`);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/blacklisted-clients', async (req, res) => {
+    try {
+        const { applywizz_id, reason = 'Manually excluded' } = req.body || {};
+        if (!applywizz_id) {
+            return res.status(400).json({ error: 'applywizz_id is required' });
+        }
+
+        // 1. Insert into database
+        await queryDB(`
+            INSERT INTO dicev2_blacklisted_clients (applywizz_id, reason, created_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (applywizz_id) DO UPDATE SET reason = EXCLUDED.reason
+        `, [applywizz_id, reason]);
+
+        // 2. Add to in-memory blacklist
+        blacklistedClients.add(applywizz_id);
+
+        // 3. Clear from active RAM queues (pending or cooldown)
+        let clearedRamBacklog = 0;
+        let clearedRamQueue = 0;
+        for (let i = masterBacklog.length - 1; i >= 0; i--) {
+            if (masterBacklog[i].applywizz_id === applywizz_id) {
+                masterBacklog.splice(i, 1);
+                clearedRamBacklog++;
+            }
+        }
+        for (let i = jobQueue.length - 1; i >= 0; i--) {
+            if (jobQueue[i].applywizz_id === applywizz_id) {
+                if (jobQueue[i].status !== 'PROCESSING') {
+                    jobQueue.splice(i, 1);
+                    clearedRamQueue++;
+                }
+            }
+        }
+
+        // 4. Delete from active queue database tables
+        await queryDB('DELETE FROM dicev2_master_backlog WHERE applywizz_id = $1', [applywizz_id]);
+        await queryDB("DELETE FROM dicev2_live_queue WHERE applywizz_id = $1 AND status != 'PROCESSING'", [applywizz_id]);
+
+        await syncLiveQueue();
+        await syncMasterBacklog();
+
+        sysLog(`[BLACKLIST] Client [${applywizz_id}] has been BLACKLISTED. Removed ${clearedRamBacklog} backlog & ${clearedRamQueue} queued jobs.`);
+
+        res.json({
+            success: true,
+            applywizz_id,
+            cleared_backlog: clearedRamBacklog,
+            cleared_queue: clearedRamQueue,
+            message: `Client ${applywizz_id} blacklisted successfully. Evicted from pending queues.`
+        });
+    } catch (err) {
+        sysLog(`ERROR blacklisting client [${req.body?.applywizz_id}]: ${err.message}`);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/blacklisted-clients/:applywizz_id', async (req, res) => {
+    try {
+        const { applywizz_id } = req.params;
+        if (!applywizz_id) {
+            return res.status(400).json({ error: 'applywizz_id is required' });
+        }
+
+        // 1. Remove from database
+        await queryDB('DELETE FROM dicev2_blacklisted_clients WHERE applywizz_id = $1', [applywizz_id]);
+
+        // 2. Remove from in-memory blacklist
+        blacklistedClients.delete(applywizz_id);
+
+        sysLog(`[BLACKLIST] Client [${applywizz_id}] has been RESTORED from blacklist.`);
+
+        res.json({
+            success: true,
+            applywizz_id,
+            message: `Client ${applywizz_id} restored from blacklist successfully.`
+        });
+    } catch (err) {
+        sysLog(`ERROR restoring client [${req.params?.applywizz_id}]: ${err.message}`);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Run single client on-demand (loads unapplied scraped jobs into masterBacklog and triggers worker)
 app.post('/api/run-client', async (req, res) => {
     try {
         const { applywizz_id, extend_cap } = req.body || {};
         if (!applywizz_id) {
             return res.status(400).json({ error: 'applywizz_id is required' });
+        }
+
+        if (blacklistedClients.has(applywizz_id)) {
+            return res.status(400).json({
+                error: `Client ${applywizz_id} is currently blacklisted. Please restore the client before running.`
+            });
         }
 
         const todayCount = await getTodayClientCompletedCount(applywizz_id);
