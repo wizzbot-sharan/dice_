@@ -595,8 +595,8 @@ async function runAutomation(job) {
 
         if (isLoginPage) {
             log(applywizz_id, 'Login page confirmed via URL/DOM. Proceeding with login flow...');
-            const password = process.env.DICE_PASSWORD;
-            if (!password) throw new Error("DICE_PASSWORD is not set in .env");
+            const password = job.password || (clientCredentialsMap.get(applywizz_id)?.dice_password) || process.env.DICE_PASSWORD;
+            if (!password) throw new Error("DICE_PASSWORD is not set in .env and no custom password configured");
 
             try {
                 await emailInput.fill(email_id);
@@ -1077,9 +1077,12 @@ async function pollAndIngestNewJobs() {
         }
 
         const freshJobs = await queryDB(`
-            SELECT d.url, d.applywizz_id, d.title as job_name, d.company, c.company_email as email_id
+            SELECT d.url, d.applywizz_id, d.title as job_name, d.company,
+                   COALESCE(cred.selected_email, c.company_email) as email_id,
+                   cred.dice_password as custom_password
             FROM dice_scraped_jobs d
             JOIN clients_additional_info c ON d.applywizz_id = c.applywizz_id
+            LEFT JOIN dicev2_client_credentials cred ON d.applywizz_id = cred.applywizz_id
             WHERE d.scraped_at > NOW() - INTERVAL '24 hours'
               AND d.applywizz_id NOT IN (SELECT applywizz_id FROM trigger_client WHERE status = 'purged')
               AND d.applywizz_id NOT IN (SELECT applywizz_id FROM dicev2_blacklisted_clients)
@@ -1142,6 +1145,7 @@ async function pollAndIngestNewJobs() {
                 id: ++maxId,
                 applywizz_id: row.applywizz_id,
                 email_id: row.email_id,
+                password: row.custom_password || (clientCredentialsMap.get(row.applywizz_id)?.dice_password) || process.env.DICE_PASSWORD,
                 zoho_connected: client ? client.zoho_connected : false,
                 url: row.url,
                 job_name: row.job_name,
@@ -1241,6 +1245,15 @@ async function initializeDatabase() {
             reason TEXT DEFAULT 'Manually excluded',
             created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
         );
+        CREATE TABLE IF NOT EXISTS dicev2_client_credentials (
+            applywizz_id VARCHAR PRIMARY KEY,
+            selected_email VARCHAR NOT NULL,
+            email_type VARCHAR DEFAULT 'company',
+            dice_password VARCHAR,
+            zoho_connected BOOLEAN DEFAULT FALSE,
+            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        );
+        ALTER TABLE clients_additional_info ADD COLUMN IF NOT EXISTS personal_email VARCHAR;
     `);
 
     try {
@@ -1254,6 +1267,24 @@ async function initializeDatabase() {
         }
     } catch (e) {
         sysLog(`Warning: Failed to load blacklisted clients on startup: ${e.message}`);
+    }
+
+    try {
+        const credRows = await queryDB("SELECT applywizz_id, selected_email, email_type, dice_password, zoho_connected FROM dicev2_client_credentials");
+        clientCredentialsMap.clear();
+        for (const r of credRows) {
+            clientCredentialsMap.set(r.applywizz_id, {
+                selected_email: r.selected_email,
+                email_type: r.email_type,
+                dice_password: r.dice_password,
+                zoho_connected: r.zoho_connected
+            });
+        }
+        if (clientCredentialsMap.size > 0) {
+            sysLog(`Loaded ${clientCredentialsMap.size} client credential override(s) into memory.`);
+        }
+    } catch (e) {
+        sysLog(`Warning: Failed to load client credentials on startup: ${e.message}`);
     }
 
     try {
@@ -1272,6 +1303,7 @@ async function initializeDatabase() {
 let clientSuccessCounts = {};
 const purgedClientsToday = new Set();
 const blacklistedClients = new Set();
+const clientCredentialsMap = new Map();
 
 async function getTodayClientCompletedCount(applywizz_id) {
     try {
@@ -1322,9 +1354,12 @@ async function startJobRun(isFresh = true) {
 
         // Fetch remaining clients not yet triggered via trigger_client
         const rawJobs = await queryDB(`
-            SELECT d.url, d.applywizz_id, d.title as job_name, d.company, c.company_email as email_id
+            SELECT d.url, d.applywizz_id, d.title as job_name, d.company,
+                   COALESCE(cred.selected_email, c.company_email) as email_id,
+                   cred.dice_password as custom_password
             FROM dice_scraped_jobs d
             JOIN clients_additional_info c ON d.applywizz_id = c.applywizz_id
+            LEFT JOIN dicev2_client_credentials cred ON d.applywizz_id = cred.applywizz_id
             WHERE d.applywizz_id NOT IN (SELECT applywizz_id FROM trigger_client)
               AND d.applywizz_id NOT IN (SELECT applywizz_id FROM dicev2_blacklisted_clients)
               AND d.scraped_at > NOW() - INTERVAL '24 hours'
@@ -1365,6 +1400,7 @@ async function startJobRun(isFresh = true) {
                 id: ++maxId,
                 applywizz_id: row.applywizz_id,
                 email_id: row.email_id,
+                password: row.custom_password || (clientCredentialsMap.get(row.applywizz_id)?.dice_password) || process.env.DICE_PASSWORD,
                 zoho_connected: client ? client.zoho_connected : false,
                 url: row.url,
                 job_name: row.job_name,
@@ -1427,9 +1463,12 @@ async function startJobRun(isFresh = true) {
 
     // 1. Fetch valid jobs < 24 hours old
     const rawJobs = await queryDB(`
-        SELECT d.url, d.applywizz_id, d.title as job_name, d.company, c.company_email as email_id
+        SELECT d.url, d.applywizz_id, d.title as job_name, d.company,
+               COALESCE(cred.selected_email, c.company_email) as email_id,
+               cred.dice_password as custom_password
         FROM dice_scraped_jobs d
         JOIN clients_additional_info c ON d.applywizz_id = c.applywizz_id
+        LEFT JOIN dicev2_client_credentials cred ON d.applywizz_id = cred.applywizz_id
         WHERE d.scraped_at > NOW() - INTERVAL '24 hours'
           AND d.applywizz_id NOT IN (SELECT applywizz_id FROM dicev2_blacklisted_clients)
           AND NOT EXISTS (
@@ -1467,6 +1506,7 @@ async function startJobRun(isFresh = true) {
             id: jobIdCounter++,
             applywizz_id: row.applywizz_id,
             email_id: row.email_id,
+            password: row.custom_password || (clientCredentialsMap.get(row.applywizz_id)?.dice_password) || process.env.DICE_PASSWORD,
             zoho_connected: client ? client.zoho_connected : false,
             url: row.url,
             job_name: row.job_name,
@@ -1559,9 +1599,12 @@ async function pollClientStatusApi() {
             await queryDB('INSERT INTO trigger_client (applywizz_id, status) VALUES ($1, $2) ON CONFLICT (applywizz_id) DO UPDATE SET status = EXCLUDED.status', [uid, clientItem.status]);
 
             const jobs = await queryDB(`
-                SELECT d.url, d.applywizz_id, d.title as job_name, d.company, c.company_email as email_id
+                SELECT d.url, d.applywizz_id, d.title as job_name, d.company,
+                       COALESCE(cred.selected_email, c.company_email) as email_id,
+                       cred.dice_password as custom_password
                 FROM dice_scraped_jobs d
                 JOIN clients_additional_info c ON d.applywizz_id = c.applywizz_id
+                LEFT JOIN dicev2_client_credentials cred ON d.applywizz_id = cred.applywizz_id
                 WHERE d.applywizz_id = $1
                   AND d.scraped_at > NOW() - INTERVAL '24 hours'
                   AND NOT EXISTS (
@@ -1589,6 +1632,7 @@ async function pollClientStatusApi() {
                     id: ++maxId,
                     applywizz_id: uid,
                     email_id: j.email_id,
+                    password: j.custom_password || (clientCredentialsMap.get(uid)?.dice_password) || process.env.DICE_PASSWORD,
                     zoho_connected: zohoConn,
                     url: j.url,
                     job_name: j.job_name,
@@ -2013,6 +2057,20 @@ app.get('/api/stats', async (req, res) => {
             SELECT 
                 COALESCE(c.applywizz_id, j.applywizz_id) as applywizz_id,
                 COALESCE(c.company_email, '') as company_email,
+                COALESCE(
+                    c.personal_email,
+                    CASE WHEN c.raw_payload IS NOT NULL AND c.raw_payload != '' 
+                         THEN (c.raw_payload::jsonb->>'personal_email') 
+                         ELSE NULL END,
+                    CASE WHEN c.raw_payload IS NOT NULL AND c.raw_payload != '' 
+                         THEN (c.raw_payload::jsonb->>'email') 
+                         ELSE NULL END,
+                    ''
+                ) as personal_email,
+                COALESCE(cred.selected_email, c.company_email, '') as active_email,
+                COALESCE(cred.email_type, 'company') as email_type,
+                CASE WHEN cred.dice_password IS NOT NULL AND cred.dice_password != '' THEN true ELSE false END as has_custom_password,
+                COALESCE(cred.zoho_connected, false) as zoho_connected,
                 COALESCE(j.completed_count, 0) as completed_count,
                 COALESCE(j.zoho_skipped_count, 0) as zoho_skipped_count,
                 COALESCE(j.clean_completed_count, 0) as clean_completed_count,
@@ -2020,6 +2078,7 @@ app.get('/api/stats', async (req, res) => {
                 COALESCE(j.failed_count, 0) as failed_count
             FROM clients_additional_info c
             FULL OUTER JOIN client_jobs j ON c.applywizz_id = j.applywizz_id
+            LEFT JOIN dicev2_client_credentials cred ON COALESCE(c.applywizz_id, j.applywizz_id) = cred.applywizz_id
             WHERE COALESCE(c.applywizz_id, j.applywizz_id) IS NOT NULL
               AND COALESCE(c.applywizz_id, j.applywizz_id) NOT IN (SELECT applywizz_id FROM dicev2_blacklisted_clients)
             ORDER BY completed_count DESC, failed_count DESC, applywizz_id ASC
@@ -2265,6 +2324,179 @@ app.delete('/api/blacklisted-clients/:applywizz_id', async (req, res) => {
     }
 });
 
+// --- CLIENT CREDENTIALS OVERRIDES ---
+app.post('/api/client-credentials', async (req, res) => {
+    try {
+        const { applywizz_id, selected_email, email_type, dice_password } = req.body || {};
+        if (!applywizz_id || !selected_email) {
+            return res.status(400).json({ error: 'applywizz_id and selected_email are required.' });
+        }
+
+        const cleanEmail = selected_email.trim();
+        const cleanType = (email_type || 'company').toLowerCase();
+        const cleanPassword = (dice_password && dice_password.trim() !== '') ? dice_password.trim() : null;
+
+        // 1. Zoho connectivity check for the chosen email
+        let isZohoConnected = false;
+        try {
+            const zohoResults = await precheckZohoConnections([{ email_id: cleanEmail, applywizz_id }]);
+            isZohoConnected = zohoResults[0]?.zoho_connected || false;
+        } catch (zErr) {
+            sysLog(`[CREDENTIALS] Zoho precheck notice for ${applywizz_id}: ${zErr.message}`);
+        }
+
+        // 2. Upsert into dicev2_client_credentials
+        await queryDB(`
+            INSERT INTO dicev2_client_credentials (applywizz_id, selected_email, email_type, dice_password, zoho_connected, updated_at)
+            VALUES ($1, $2, $3, $4, $5, NOW())
+            ON CONFLICT (applywizz_id) DO UPDATE SET
+                selected_email = EXCLUDED.selected_email,
+                email_type = EXCLUDED.email_type,
+                dice_password = EXCLUDED.dice_password,
+                zoho_connected = EXCLUDED.zoho_connected,
+                updated_at = NOW()
+        `, [applywizz_id, cleanEmail, cleanType, cleanPassword, isZohoConnected]);
+
+        // 3. Update in-memory Map
+        clientCredentialsMap.set(applywizz_id, {
+            selected_email: cleanEmail,
+            email_type: cleanType,
+            dice_password: cleanPassword,
+            zoho_connected: isZohoConnected
+        });
+
+        // 4. Invalidate cached browser sessions for this client (forces fresh login on next run)
+        try {
+            await queryDB('DELETE FROM dicev2_sessions WHERE email_id = $1', [cleanEmail]);
+            const oldSessionFile = path.join(sessionsDir, `${applywizz_id}_session.json`);
+            if (fs.existsSync(oldSessionFile)) {
+                fs.unlinkSync(oldSessionFile);
+            }
+        } catch (sErr) {
+            sysLog(`[CREDENTIALS] Session invalidation notice for ${applywizz_id}: ${sErr.message}`);
+        }
+
+        // 5. Update active RAM queues (jobQueue and masterBacklog)
+        let updatedCount = 0;
+        const effectivePassword = cleanPassword || process.env.DICE_PASSWORD;
+
+        for (const job of jobQueue) {
+            if (job.applywizz_id === applywizz_id) {
+                job.email_id = cleanEmail;
+                job.password = effectivePassword;
+                job.zoho_connected = isZohoConnected;
+                updatedCount++;
+            }
+        }
+        for (const job of masterBacklog) {
+            if (job.applywizz_id === applywizz_id) {
+                job.email_id = cleanEmail;
+                job.password = effectivePassword;
+                job.zoho_connected = isZohoConnected;
+                updatedCount++;
+            }
+        }
+
+        if (updatedCount > 0) {
+            await syncLiveQueue();
+            await syncMasterBacklog();
+        }
+
+        // 6. Clear fatal login flag if client previously failed today
+        if (fatalLoginClients.has(applywizz_id)) {
+            fatalLoginClients.delete(applywizz_id);
+            sysLog(`[CREDENTIALS] Cleared fatal login flag for ${applywizz_id} after credential update.`);
+        }
+
+        sysLog(`[CREDENTIALS] Updated credentials for [${applywizz_id}]: ${cleanEmail} (${cleanType}), Custom Password: ${cleanPassword ? 'Yes' : 'No'}, Zoho: ${isZohoConnected}, Queued jobs updated: ${updatedCount}`);
+
+        res.json({
+            success: true,
+            client: {
+                applywizz_id,
+                active_email: cleanEmail,
+                email_type: cleanType,
+                has_custom_password: !!cleanPassword,
+                zoho_connected: isZohoConnected
+            }
+        });
+    } catch (err) {
+        sysLog(`[CREDENTIALS ERROR] Failed to save credentials for [${req.body?.applywizz_id}]: ${err.message}`);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete('/api/client-credentials/:applywizz_id', async (req, res) => {
+    try {
+        const { applywizz_id } = req.params;
+        if (!applywizz_id) {
+            return res.status(400).json({ error: 'applywizz_id is required' });
+        }
+
+        // 1. Delete override from DB
+        await queryDB('DELETE FROM dicev2_client_credentials WHERE applywizz_id = $1', [applywizz_id]);
+
+        // 2. Remove from in-memory Map
+        clientCredentialsMap.delete(applywizz_id);
+
+        // 3. Look up original company_email from clients_additional_info
+        const clientRes = await queryDB('SELECT company_email FROM clients_additional_info WHERE applywizz_id = $1', [applywizz_id]);
+        const defaultEmail = clientRes[0]?.company_email || '';
+
+        // 4. Invalidate sessions
+        try {
+            await queryDB('DELETE FROM dicev2_sessions WHERE email_id = $1', [defaultEmail]);
+            const oldSessionFile = path.join(sessionsDir, `${applywizz_id}_session.json`);
+            if (fs.existsSync(oldSessionFile)) {
+                fs.unlinkSync(oldSessionFile);
+            }
+        } catch (_) {}
+
+        // 5. Precheck Zoho for default email
+        let isZohoConnected = false;
+        if (defaultEmail) {
+            try {
+                const zRes = await precheckZohoConnections([{ email_id: defaultEmail, applywizz_id }]);
+                isZohoConnected = zRes[0]?.zoho_connected || false;
+            } catch (_) {}
+        }
+
+        // 6. Reset RAM jobs back to default
+        for (const job of jobQueue) {
+            if (job.applywizz_id === applywizz_id) {
+                job.email_id = defaultEmail;
+                job.password = process.env.DICE_PASSWORD;
+                job.zoho_connected = isZohoConnected;
+            }
+        }
+        for (const job of masterBacklog) {
+            if (job.applywizz_id === applywizz_id) {
+                job.email_id = defaultEmail;
+                job.password = process.env.DICE_PASSWORD;
+                job.zoho_connected = isZohoConnected;
+            }
+        }
+        await syncLiveQueue();
+        await syncMasterBacklog();
+
+        sysLog(`[CREDENTIALS] Reset credentials for [${applywizz_id}] back to default company email.`);
+
+        res.json({
+            success: true,
+            client: {
+                applywizz_id,
+                active_email: defaultEmail,
+                email_type: 'company',
+                has_custom_password: false,
+                zoho_connected: isZohoConnected
+            }
+        });
+    } catch (err) {
+        sysLog(`[CREDENTIALS ERROR] Failed to reset credentials for [${req.params?.applywizz_id}]: ${err.message}`);
+        res.status(500).json({ error: err.message });
+    }
+});
+
 // Run single client on-demand (loads unapplied scraped jobs into masterBacklog and triggers worker)
 app.post('/api/run-client', async (req, res) => {
     try {
@@ -2297,9 +2529,12 @@ app.post('/api/run-client', async (req, res) => {
 
         // Ingest unapplied scraped jobs from dice_scraped_jobs (last 24 hours)
         const jobs = await queryDB(`
-            SELECT d.url, d.applywizz_id, d.title as job_name, d.company, c.company_email as email_id
+            SELECT d.url, d.applywizz_id, d.title as job_name, d.company,
+                   COALESCE(cred.selected_email, c.company_email) as email_id,
+                   cred.dice_password as custom_password
             FROM dice_scraped_jobs d
             JOIN clients_additional_info c ON d.applywizz_id = c.applywizz_id
+            LEFT JOIN dicev2_client_credentials cred ON d.applywizz_id = cred.applywizz_id
             WHERE d.applywizz_id = $1
               AND d.scraped_at > NOW() - INTERVAL '24 hours'
               AND NOT EXISTS (
@@ -2340,6 +2575,7 @@ app.post('/api/run-client', async (req, res) => {
                 id: ++maxId,
                 applywizz_id,
                 email_id: j.email_id,
+                password: j.custom_password || (clientCredentialsMap.get(applywizz_id)?.dice_password) || process.env.DICE_PASSWORD,
                 zoho_connected: zohoConn,
                 url: j.url,
                 job_name: j.job_name,

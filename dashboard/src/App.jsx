@@ -44,6 +44,8 @@ import {
   ArrowRight,
   Trash2,
   Eye,
+  EyeOff,
+  Key,
   ZoomIn,
   ZoomOut,
   Globe,
@@ -166,6 +168,168 @@ function App() {
   const [clientToPurge, setClientToPurge] = useState(null);
   const [isPurgingClient, setIsPurgingClient] = useState(false);
   const [purgeToast, setPurgeToast] = useState(null);
+
+  // Per-Client Credentials Popover State
+  const [openCredentialPopoverId, setOpenCredentialPopoverId] = useState(null);
+  const [credSelectedType, setCredSelectedType] = useState('company');
+  const [credCustomEmail, setCredCustomEmail] = useState('');
+  const [credUseDefaultPass, setCredUseDefaultPass] = useState(true);
+  const [credCustomPass, setCredCustomPass] = useState('');
+  const [credShowPass, setCredShowPass] = useState(false);
+  const [isSavingCreds, setIsSavingCreds] = useState(false);
+  const [saveCredsError, setSaveCredsError] = useState('');
+  const [credToast, setCredToast] = useState(null);
+  const credPopoverRef = useRef(null);
+
+  // Close credential popover when clicking outside or pressing Escape
+  useEffect(() => {
+    if (!openCredentialPopoverId) return;
+    const handleClickOutside = (e) => {
+      if (credPopoverRef.current && !credPopoverRef.current.contains(e.target)) {
+        setOpenCredentialPopoverId(null);
+      }
+    };
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setOpenCredentialPopoverId(null);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [openCredentialPopoverId]);
+
+  const handleOpenCredentialPopover = (client) => {
+    if (openCredentialPopoverId === client.applywizz_id) {
+      setOpenCredentialPopoverId(null);
+      return;
+    }
+    setOpenCredentialPopoverId(client.applywizz_id);
+    setCredSelectedType(client.email_type || 'company');
+    setCredCustomEmail(client.email_type === 'custom' ? (client.active_email || '') : '');
+    setCredUseDefaultPass(!client.has_custom_password);
+    setCredCustomPass('');
+    setCredShowPass(false);
+    setSaveCredsError('');
+  };
+
+  const handleSaveCredentials = async (client) => {
+    setIsSavingCreds(true);
+    setSaveCredsError('');
+    try {
+      let chosenEmail = client.company_email;
+      if (credSelectedType === 'personal') {
+        chosenEmail = client.personal_email;
+      } else if (credSelectedType === 'custom') {
+        chosenEmail = credCustomEmail.trim();
+        if (!chosenEmail || !chosenEmail.includes('@')) {
+          setSaveCredsError('Please enter a valid custom email address.');
+          setIsSavingCreds(false);
+          return;
+        }
+      }
+
+      if (!chosenEmail) {
+        setSaveCredsError('No valid email address available for this selection.');
+        setIsSavingCreds(false);
+        return;
+      }
+
+      if (!credUseDefaultPass && !credCustomPass.trim()) {
+        setSaveCredsError('Please enter a custom password or check "Use Default Password".');
+        setIsSavingCreds(false);
+        return;
+      }
+
+      const res = await fetch('/api/client-credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          applywizz_id: client.applywizz_id,
+          selected_email: chosenEmail,
+          email_type: credSelectedType,
+          dice_password: credUseDefaultPass ? null : credCustomPass.trim()
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Failed to update credentials.');
+      }
+
+      // Update local client in stats.clients state directly
+      setStats(prev => ({
+        ...prev,
+        clients: prev.clients.map(c => {
+          if (c.applywizz_id === client.applywizz_id) {
+            return {
+              ...c,
+              active_email: chosenEmail,
+              email_type: credSelectedType,
+              has_custom_password: !credUseDefaultPass,
+              zoho_connected: data.client?.zoho_connected ?? c.zoho_connected
+            };
+          }
+          return c;
+        })
+      }));
+
+      setOpenCredentialPopoverId(null);
+      setCredToast({
+        type: 'success',
+        message: `Credentials updated for ${client.applywizz_id}. Live queue synchronized!`
+      });
+      setTimeout(() => setCredToast(null), 4000);
+    } catch (err) {
+      setSaveCredsError(err.message);
+    } finally {
+      setIsSavingCreds(false);
+    }
+  };
+
+  const handleResetCredentials = async (client) => {
+    setIsSavingCreds(true);
+    setSaveCredsError('');
+    try {
+      const res = await fetch(`/api/client-credentials/${client.applywizz_id}`, {
+        method: 'DELETE'
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Failed to reset credentials.');
+      }
+
+      setStats(prev => ({
+        ...prev,
+        clients: prev.clients.map(c => {
+          if (c.applywizz_id === client.applywizz_id) {
+            return {
+              ...c,
+              active_email: c.company_email,
+              email_type: 'company',
+              has_custom_password: false,
+              zoho_connected: data.client?.zoho_connected ?? c.zoho_connected
+            };
+          }
+          return c;
+        })
+      }));
+
+      setOpenCredentialPopoverId(null);
+      setCredToast({
+        type: 'success',
+        message: `Reset credentials for ${client.applywizz_id} to default.`
+      });
+      setTimeout(() => setCredToast(null), 4000);
+    } catch (err) {
+      setSaveCredsError(err.message);
+    } finally {
+      setIsSavingCreds(false);
+    }
+  };
 
   // Per-Client Run State
   const [runningClients, setRunningClients] = useState({});
@@ -1169,7 +1333,7 @@ function App() {
                     <tr>
                       <th className="px-4 py-3.5 w-12 text-center text-zinc-500 font-mono">#</th>
                       <th className="px-6 py-3.5">ApplyWizz ID</th>
-                      <th className="px-6 py-3.5">Company Email</th>
+                      <th className="px-6 py-3.5">Dice Login Email / Creds</th>
                       <th className="px-6 py-3.5 text-center">Completed</th>
                       <th className="px-6 py-3.5 text-center">Preflight Failed</th>
                       <th className="px-6 py-3.5 text-center">Failed</th>
@@ -1201,8 +1365,241 @@ function App() {
                           <td className="px-6 py-3.5 font-medium text-zinc-100 font-mono">
                             {client.applywizz_id}
                           </td>
-                          <td className="px-6 py-3.5 text-zinc-400">
-                            {client.company_email || <span className="text-zinc-600 italic">Not set</span>}
+                          <td className="px-6 py-3.5 relative">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleOpenCredentialPopover(client);
+                              }}
+                              className="group inline-flex items-center gap-1.5 text-left text-zinc-300 hover:text-white transition-colors focus:outline-none"
+                              title="Click to view or edit Dice login credentials (email & password)"
+                            >
+                              <span className="font-mono text-xs max-w-[200px] truncate">
+                                {client.active_email || client.company_email || <span className="text-zinc-600 italic">Not set</span>}
+                              </span>
+
+                              {/* Badge for Email Type */}
+                              {client.email_type === 'personal' && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] bg-purple-500/10 text-purple-400 border border-purple-500/20 font-medium">
+                                  Personal
+                                </span>
+                              )}
+                              {client.email_type === 'custom' && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-500/10 text-blue-400 border border-blue-500/20 font-medium">
+                                  Custom
+                                </span>
+                              )}
+
+                              {/* Custom Password Indicator */}
+                              {client.has_custom_password && (
+                                <span title="Custom password active" className="inline-flex items-center text-amber-400">
+                                  <Lock className="w-3 h-3" />
+                                </span>
+                              )}
+
+                              {/* Zoho Indicator Dot */}
+                              <span
+                                className={`w-2 h-2 rounded-full inline-block shrink-0 ${client.zoho_connected ? 'bg-emerald-500 shadow-sm shadow-emerald-500/50' : 'bg-zinc-600'}`}
+                                title={client.zoho_connected ? 'Zoho Mail Connected' : 'Zoho Mail Not Connected'}
+                              />
+
+                              <ChevronDown className="w-3.5 h-3.5 text-zinc-500 group-hover:text-zinc-300 transition-colors shrink-0" />
+                            </button>
+
+                            {/* Interactive Popover */}
+                            {openCredentialPopoverId === client.applywizz_id && (
+                              <div
+                                ref={credPopoverRef}
+                                onClick={(e) => e.stopPropagation()}
+                                className="absolute left-6 top-12 z-50 w-80 sm:w-96 bg-zinc-900 border border-zinc-700/80 rounded-xl shadow-2xl p-4 text-xs font-sans text-zinc-200"
+                                style={{ filter: 'drop-shadow(0 20px 25px rgba(0, 0, 0, 0.7))' }}
+                              >
+                                {/* Header */}
+                                <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+                                  <div className="flex items-center gap-2">
+                                    <Lock className="w-4 h-4 text-blue-400" />
+                                    <span className="font-semibold text-zinc-100 text-sm">Dice Login Credentials</span>
+                                  </div>
+                                  <button
+                                    onClick={() => setOpenCredentialPopoverId(null)}
+                                    className="text-zinc-400 hover:text-zinc-200 p-1 rounded-md hover:bg-zinc-800 transition-colors"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+
+                                <div className="mt-2 text-[11px] text-zinc-400">
+                                  Configure Dice login email & password for <span className="font-mono text-blue-400 font-semibold">{client.applywizz_id}</span>
+                                </div>
+
+                                {/* Email Radio Selection */}
+                                <div className="mt-3.5 space-y-2">
+                                  <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-500">Login Email Option</div>
+
+                                  {/* 1. Company Email */}
+                                  <label className={`flex items-start gap-2.5 p-2 rounded-lg cursor-pointer transition-colors border ${credSelectedType === 'company' ? 'bg-blue-500/10 border-blue-500/30 text-white' : 'border-zinc-800/80 hover:bg-zinc-800/40 text-zinc-300'}`}>
+                                    <input
+                                      type="radio"
+                                      name={`email_type_${client.applywizz_id}`}
+                                      value="company"
+                                      checked={credSelectedType === 'company'}
+                                      onChange={() => setCredSelectedType('company')}
+                                      className="mt-0.5 accent-blue-500"
+                                    />
+                                    <div className="flex-1 min-w-0">
+                                      <div className="font-medium text-xs flex items-center justify-between">
+                                        <span>Company Email</span>
+                                        <span className="text-[10px] text-zinc-500 font-mono">Default</span>
+                                      </div>
+                                      <div className="font-mono text-[11px] text-zinc-400 truncate mt-0.5">
+                                        {client.company_email || <span className="text-zinc-600 italic">None registered in CRM</span>}
+                                      </div>
+                                    </div>
+                                  </label>
+
+                                  {/* 2. Personal Email */}
+                                  <label className={`flex items-start gap-2.5 p-2 rounded-lg transition-colors border ${!client.personal_email ? 'opacity-40 cursor-not-allowed border-zinc-800/50' : credSelectedType === 'personal' ? 'bg-purple-500/10 border-purple-500/30 text-white cursor-pointer' : 'border-zinc-800/80 hover:bg-zinc-800/40 text-zinc-300 cursor-pointer'}`}>
+                                    <input
+                                      type="radio"
+                                      name={`email_type_${client.applywizz_id}`}
+                                      value="personal"
+                                      disabled={!client.personal_email}
+                                      checked={credSelectedType === 'personal'}
+                                      onChange={() => client.personal_email && setCredSelectedType('personal')}
+                                      className="mt-0.5 accent-purple-500"
+                                    />
+                                    <div className="flex-1 min-w-0">
+                                      <div className="font-medium text-xs flex items-center justify-between">
+                                        <span>Personal Email</span>
+                                        <span className="text-[10px] text-purple-400 font-mono">CRM</span>
+                                      </div>
+                                      <div className="font-mono text-[11px] text-zinc-400 truncate mt-0.5">
+                                        {client.personal_email || <span className="text-zinc-600 italic">None registered in CRM</span>}
+                                      </div>
+                                    </div>
+                                  </label>
+
+                                  {/* 3. Custom Email */}
+                                  <label className={`flex items-start gap-2.5 p-2 rounded-lg cursor-pointer transition-colors border ${credSelectedType === 'custom' ? 'bg-blue-500/10 border-blue-500/30 text-white' : 'border-zinc-800/80 hover:bg-zinc-800/40 text-zinc-300'}`}>
+                                    <input
+                                      type="radio"
+                                      name={`email_type_${client.applywizz_id}`}
+                                      value="custom"
+                                      checked={credSelectedType === 'custom'}
+                                      onChange={() => setCredSelectedType('custom')}
+                                      className="mt-0.5 accent-blue-500"
+                                    />
+                                    <div className="flex-1 min-w-0">
+                                      <div className="font-medium text-xs flex items-center justify-between">
+                                        <span>Custom Email Override</span>
+                                        <span className="text-[10px] text-blue-400 font-mono">Manual</span>
+                                      </div>
+                                      {credSelectedType === 'custom' && (
+                                        <input
+                                          type="email"
+                                          value={credCustomEmail}
+                                          onChange={(e) => setCredCustomEmail(e.target.value)}
+                                          placeholder="Type custom login email..."
+                                          className="mt-2 w-full bg-zinc-950 border border-zinc-700 rounded-md px-2.5 py-1.5 text-xs text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-blue-500"
+                                          autoFocus
+                                        />
+                                      )}
+                                    </div>
+                                  </label>
+                                </div>
+
+                                {/* Password Configuration */}
+                                <div className="mt-4 pt-3 border-t border-zinc-800">
+                                  <div className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 mb-2">Password Configuration</div>
+
+                                  <label className="flex items-center gap-2 p-1 text-xs text-zinc-300 cursor-pointer">
+                                    <input
+                                      type="checkbox"
+                                      checked={credUseDefaultPass}
+                                      onChange={(e) => setCredUseDefaultPass(e.target.checked)}
+                                      className="accent-blue-500 rounded"
+                                    />
+                                    <span>Use Standard Default Password</span>
+                                  </label>
+
+                                  {!credUseDefaultPass && (
+                                    <div className="mt-2 relative">
+                                      <input
+                                        type={credShowPass ? "text" : "password"}
+                                        value={credCustomPass}
+                                        onChange={(e) => setCredCustomPass(e.target.value)}
+                                        placeholder="Enter custom Dice password..."
+                                        className="w-full bg-zinc-950 border border-zinc-700 rounded-md px-2.5 py-1.5 pr-8 text-xs text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-blue-500"
+                                      />
+                                      <button
+                                        type="button"
+                                        onClick={() => setCredShowPass(!credShowPass)}
+                                        className="absolute right-2.5 top-2 text-zinc-500 hover:text-zinc-300 transition-colors"
+                                      >
+                                        {credShowPass ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Zoho Connectivity Notice */}
+                                <div className="mt-3.5 py-1.5 px-2.5 rounded-lg bg-zinc-950/80 border border-zinc-800 flex items-center justify-between text-[11px]">
+                                  <span className="text-zinc-400">Zoho Mail Reader:</span>
+                                  <span className={`inline-flex items-center gap-1 font-medium ${client.zoho_connected ? 'text-emerald-400' : 'text-zinc-500'}`}>
+                                    <span className={`w-1.5 h-1.5 rounded-full ${client.zoho_connected ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
+                                    {client.zoho_connected ? 'Connected' : 'Not Connected'}
+                                  </span>
+                                </div>
+
+                                {/* Error Message */}
+                                {saveCredsError && (
+                                  <div className="mt-2.5 p-2 rounded-md bg-red-950/50 border border-red-800/80 text-red-300 text-[11px]">
+                                    {saveCredsError}
+                                  </div>
+                                )}
+
+                                {/* Popover Actions */}
+                                <div className="mt-4 pt-3 border-t border-zinc-800 flex items-center justify-between gap-2">
+                                  {(client.email_type !== 'company' || client.has_custom_password) ? (
+                                    <button
+                                      type="button"
+                                      disabled={isSavingCreds}
+                                      onClick={() => handleResetCredentials(client)}
+                                      className="text-[11px] text-zinc-400 hover:text-zinc-200 underline decoration-zinc-600 hover:decoration-zinc-400 disabled:opacity-50"
+                                    >
+                                      Reset Default
+                                    </button>
+                                  ) : <div />}
+
+                                  <div className="flex items-center gap-2">
+                                    <button
+                                      type="button"
+                                      disabled={isSavingCreds}
+                                      onClick={() => setOpenCredentialPopoverId(null)}
+                                      className="px-2.5 py-1 rounded-md text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 text-xs transition-colors"
+                                    >
+                                      Cancel
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={isSavingCreds}
+                                      onClick={() => handleSaveCredentials(client)}
+                                      className="px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 text-white font-medium text-xs flex items-center gap-1.5 transition-colors shadow-sm disabled:opacity-50"
+                                    >
+                                      {isSavingCreds ? (
+                                        <>
+                                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                          <span>Saving...</span>
+                                        </>
+                                      ) : (
+                                        <span>Save & Apply</span>
+                                      )}
+                                    </button>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
                           </td>
                           <td className="px-6 py-3.5 text-center">
                             <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${(client.completed_count || 0) > 0
@@ -1933,6 +2330,27 @@ function App() {
           <span>{purgeToast.message}</span>
           <button
             onClick={() => setPurgeToast(null)}
+            className="ml-2 text-zinc-400 hover:text-zinc-100"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Credential Toast Notification */}
+      {credToast && (
+        <div className={`fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 border text-xs font-medium animate-in fade-in slide-in-from-bottom-5 duration-200 ${credToast.type === 'success'
+            ? 'bg-emerald-950/90 border-emerald-700 text-emerald-200'
+            : 'bg-red-950/90 border-red-700 text-red-200'
+          }`}>
+          {credToast.type === 'success' ? (
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          ) : (
+            <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+          )}
+          <span>{credToast.message}</span>
+          <button
+            onClick={() => setCredToast(null)}
             className="ml-2 text-zinc-400 hover:text-zinc-100"
           >
             <X className="w-3.5 h-3.5" />
