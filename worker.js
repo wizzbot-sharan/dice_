@@ -2059,12 +2059,8 @@ app.get('/api/stats', async (req, res) => {
                 COALESCE(c.company_email, '') as company_email,
                 COALESCE(
                     c.personal_email,
-                    CASE WHEN c.raw_payload IS NOT NULL AND c.raw_payload != '' 
-                         THEN (c.raw_payload::jsonb->>'personal_email') 
-                         ELSE NULL END,
-                    CASE WHEN c.raw_payload IS NOT NULL AND c.raw_payload != '' 
-                         THEN (c.raw_payload::jsonb->>'email') 
-                         ELSE NULL END,
+                    c.raw_payload->>'personal_email',
+                    c.raw_payload->>'email',
                     ''
                 ) as personal_email,
                 COALESCE(cred.selected_email, c.company_email, '') as active_email,
