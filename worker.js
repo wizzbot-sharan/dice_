@@ -118,7 +118,7 @@ function sysLog(msg) {
     if (pool) {
         logBuffer.push({ applywizz_id: 'SYSTEM', message: text });
         if (logBuffer.length >= LOG_BUFFER_MAX_THRESHOLD) {
-            flushLogs().catch(() => {});
+            flushLogs().catch(() => { });
         }
     }
 }
@@ -128,7 +128,7 @@ function log(applywizz_id, msg) {
     if (pool) {
         logBuffer.push({ applywizz_id: applywizz_id || 'UNKNOWN', message: text });
         if (logBuffer.length >= LOG_BUFFER_MAX_THRESHOLD) {
-            flushLogs().catch(() => {});
+            flushLogs().catch(() => { });
         }
     }
 }
@@ -1063,7 +1063,7 @@ async function syncScrapedJobsFromAzure(hoursBack = 24) {
         sysLog(`[AZURE-SYNC] Error syncing from Azure: ${err.message}`);
         return { totalFetched: 0, insertedCount: 0, error: err.message };
     } finally {
-        await azurePool.end().catch(() => {});
+        await azurePool.end().catch(() => { });
         isAzureSyncing = false;
     }
 }
@@ -1072,9 +1072,6 @@ async function pollAndIngestNewJobs() {
     if (!isRunActive || !isWithinOperatingHours()) return;
     try {
         sysLog('[POLLER] Running 30-minute background check for newly scraped jobs...');
-        if (process.env.AZURE_DATABASE_URL) {
-            await syncScrapedJobsFromAzure(24);
-        }
 
         const freshJobs = await queryDB(`
             SELECT d.url, d.applywizz_id, d.title as job_name, d.company,
@@ -1456,11 +1453,6 @@ async function startJobRun(isFresh = true) {
     await initializeDatabase();
     await queryDB('TRUNCATE TABLE dicev2_live_queue, dicev2_master_backlog');
 
-    // Ensure fresh scraped jobs from Azure are synced into Supabase before launching run
-    if (process.env.AZURE_DATABASE_URL) {
-        await syncScrapedJobsFromAzure(24);
-    }
-
     // 1. Fetch valid jobs < 24 hours old
     const rawJobs = await queryDB(`
         SELECT d.url, d.applywizz_id, d.title as job_name, d.company,
@@ -1540,6 +1532,9 @@ async function startJobRun(isFresh = true) {
 }
 
 async function pollClientStatusApi() {
+    if (process.env.ENABLE_STATUS_POLLER === 'false') {
+        return;
+    }
     const apiUrl = process.env.CLIENT_STATUS_API_URL;
     if (!apiUrl) return;
 
@@ -2446,7 +2441,7 @@ app.delete('/api/client-credentials/:applywizz_id', async (req, res) => {
             if (fs.existsSync(oldSessionFile)) {
                 fs.unlinkSync(oldSessionFile);
             }
-        } catch (_) {}
+        } catch (_) { }
 
         // 5. Precheck Zoho for default email
         let isZohoConnected = false;
@@ -2454,7 +2449,7 @@ app.delete('/api/client-credentials/:applywizz_id', async (req, res) => {
             try {
                 const zRes = await precheckZohoConnections([{ email_id: defaultEmail, applywizz_id }]);
                 isZohoConnected = zRes[0]?.zoho_connected || false;
-            } catch (_) {}
+            } catch (_) { }
         }
 
         // 6. Reset RAM jobs back to default
@@ -2989,6 +2984,10 @@ setInterval(async () => {
 sysLog('Started 3-hour periodic Zoho reconnection checker.');
 // Schedule Daily Hard Stop at 11:59 PM IST (Asia/Kolkata)
 cron.schedule('59 23 * * *', async () => {
+    if (process.env.ENABLE_MIDNIGHT_FLUSH === 'false') {
+        sysLog('[CRON] 11:59 PM IST reached, but ENABLE_MIDNIGHT_FLUSH is set to false. Skipping queue wipe and hard stop.');
+        return;
+    }
     sysLog('=== DAILY HARD CUTOFF: 11:59 PM IST REACHED ===');
     sysLog('Terminating active automation, closing browser, and clearing queues for the night.');
     jobQueue = [];
@@ -3001,16 +3000,6 @@ cron.schedule('59 23 * * *', async () => {
     timezone: 'Asia/Kolkata'
 });
 sysLog('Scheduled Daily Hard Stop at 11:59 PM IST.');
-
-// Schedule Daily Scraped Jobs Sync from Azure at 9:50 AM IST (Asia/Kolkata)
-cron.schedule('50 9 * * *', async () => {
-    if (!isScheduledDay()) return;
-    sysLog('[AZURE-SYNC] Triggering daily 9:50 AM IST scraped jobs sync from Azure...');
-    await syncScrapedJobsFromAzure(24);
-}, {
-    timezone: 'Asia/Kolkata'
-});
-sysLog('Scheduled Daily Scraped Jobs Sync from Azure at 9:50 AM IST.');
 
 // --- GRACEFUL PROCESS SHUTDOWN ---
 let isShuttingDown = false;
@@ -3033,7 +3022,7 @@ async function gracefulShutdown(signal) {
         try {
             console.log('[SYSTEM] Closing browser...');
             await globalBrowser.close();
-        } catch (_) {}
+        } catch (_) { }
     }
 
     if (pool) {
