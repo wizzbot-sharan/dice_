@@ -242,6 +242,9 @@ function getIstMinutes(date = new Date()) {
 }
 
 function isWithinOperatingHours(date = new Date()) {
+    if (process.env.ENABLE_MIDNIGHT_FLUSH === 'false') {
+        return true;
+    }
     if (!isScheduledDay(date)) return false;
     const minutes = getIstMinutes(date);
     // 10:00 AM IST = 600 minutes; 11:59 PM IST = 1439 minutes
