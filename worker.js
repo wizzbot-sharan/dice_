@@ -229,7 +229,13 @@ function isScheduledDay(date = new Date()) {
     if (!cronExpr) return true;
     try {
         const parsed = cron.parse(cronExpr);
-        const istDate = new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+        let evalDate = date;
+        const minutes = getIstMinutes(date);
+        // If between midnight and 2:00 AM IST, evaluate schedule against the start day (yesterday)
+        if (minutes < 120) {
+            evalDate = new Date(date.getTime() - 3 * 60 * 60 * 1000);
+        }
+        const istDate = new Date(evalDate.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
         const istDay = istDate.getDay(); // 0 is Sunday, 1 is Monday ... 6 is Saturday
         return parsed.dayOfWeek.includes(istDay) || (istDay === 0 && parsed.dayOfWeek.includes(7));
     } catch (e) {
@@ -247,8 +253,8 @@ function isWithinOperatingHours(date = new Date()) {
     }
     if (!isScheduledDay(date)) return false;
     const minutes = getIstMinutes(date);
-    // 10:00 AM IST = 600 minutes; 11:59 PM IST = 1439 minutes
-    return minutes >= 600 && minutes < 1439;
+    // 5:00 PM IST = 1020 minutes; 2:00 AM IST = 120 minutes
+    return minutes >= 1020 || minutes < 120;
 }
 
 function isWithinStatusPollerHours(date = new Date()) {
@@ -1312,7 +1318,8 @@ async function getTodayClientCompletedCount(applywizz_id) {
             FROM dicev2_applied_jobs 
             WHERE applywizz_id = $1 
               AND status = 'Completed' 
-              AND (time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+              AND ((time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata') - INTERVAL '17 hours')::date = 
+                  ((NOW() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '17 hours')::date
         `, [applywizz_id]);
         return parseInt(res[0]?.count || 0, 10);
     } catch (e) {
@@ -1326,7 +1333,8 @@ async function getTodayCompletedCountsMap() {
             SELECT applywizz_id, COUNT(*) as count 
             FROM dicev2_applied_jobs 
             WHERE status = 'Completed' 
-              AND (time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+              AND ((time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata') - INTERVAL '17 hours')::date = 
+                  ((NOW() AT TIME ZONE 'Asia/Kolkata') - INTERVAL '17 hours')::date
             GROUP BY applywizz_id
         `);
         const map = new Map();
@@ -2985,24 +2993,24 @@ setInterval(async () => {
     await refreshDisconnectedZohoClients();
 }, 3 * 60 * 60 * 1000);
 sysLog('Started 3-hour periodic Zoho reconnection checker.');
-// Schedule Daily Hard Stop at 11:59 PM IST (Asia/Kolkata)
-cron.schedule('59 23 * * *', async () => {
+// Schedule Daily Hard Stop at 2:00 AM IST (Asia/Kolkata)
+cron.schedule('0 2 * * *', async () => {
     if (process.env.ENABLE_MIDNIGHT_FLUSH === 'false') {
-        sysLog('[CRON] 11:59 PM IST reached, but ENABLE_MIDNIGHT_FLUSH is set to false. Skipping queue wipe and hard stop.');
+        sysLog('[CRON] 2:00 AM IST reached, but ENABLE_MIDNIGHT_FLUSH is set to false. Skipping queue wipe and hard stop.');
         return;
     }
-    sysLog('=== DAILY HARD CUTOFF: 11:59 PM IST REACHED ===');
+    sysLog('=== DAILY HARD CUTOFF: 2:00 AM IST REACHED ===');
     sysLog('Terminating active automation, closing browser, and clearing queues for the night.');
     jobQueue = [];
     masterBacklog = [];
     await syncLiveQueue();
     await syncMasterBacklog();
-    await terminateJobRun('Daily 11:59 PM IST Hard Stop.');
+    await terminateJobRun('Daily 2:00 AM IST Hard Stop.');
     await flushLogs();
 }, {
     timezone: 'Asia/Kolkata'
 });
-sysLog('Scheduled Daily Hard Stop at 11:59 PM IST.');
+sysLog('Scheduled Daily Hard Stop at 2:00 AM IST.');
 
 // --- GRACEFUL PROCESS SHUTDOWN ---
 let isShuttingDown = false;
