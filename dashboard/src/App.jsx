@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   format,
   parseISO,
@@ -113,6 +113,17 @@ function App() {
   const [tempToDate, setTempToDate] = useState(() => getTodayInTz(localStorage.getItem('applywizz_tz') || 'IST'));
   const [calendarMonth, setCalendarMonth] = useState(() => new Date());
   const [selectingEnd, setSelectingEnd] = useState(false);
+
+  // View Mode: 'date' (default) | 'run'
+  const [viewMode, setViewMode] = useState('date');
+  const [runsList, setRunsList] = useState([]);
+  const [selectedRunId, setSelectedRunId] = useState('');
+  const [isRunDropdownOpen, setIsRunDropdownOpen] = useState(false);
+  const [loadingRuns, setLoadingRuns] = useState(false);
+
+  const selectedRunObj = useMemo(() => {
+    return runsList.find(r => r.run_id === selectedRunId) || runsList[0] || null;
+  }, [runsList, selectedRunId]);
 
   // Navigation & View State
   const [activeSection, setActiveSection] = useState('all-stats'); // 'all-stats' | 'errors' | 'logs'
@@ -437,10 +448,29 @@ function App() {
     }
   };
 
+  const fetchRuns = async () => {
+    setLoadingRuns(true);
+    try {
+      const res = await fetch('/api/runs');
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) {
+        setRunsList(data);
+        if (!selectedRunId) {
+          setSelectedRunId(data[0].run_id);
+        }
+      }
+    } catch (e) {
+      console.error('Error fetching runs:', e);
+    }
+    setLoadingRuns(false);
+  };
+
   const fetchStats = async () => {
     setLoadingStats(true);
     let url = `/api/stats?tz=${encodeURIComponent(selectedTz)}`;
-    if (fromDate && toDate) {
+    if (viewMode === 'run' && selectedRunId) {
+      url += `&run_id=${encodeURIComponent(selectedRunId)}`;
+    } else if (fromDate && toDate) {
       url += `&from=${fromDate}&to=${toDate} 23:59:59`;
     }
     try {
@@ -466,7 +496,9 @@ function App() {
   const fetchErrors = async () => {
     setLoadingErrors(true);
     let url = `/api/errors?tz=${encodeURIComponent(selectedTz)}`;
-    if (fromDate && toDate) {
+    if (viewMode === 'run' && selectedRunId) {
+      url += `&run_id=${encodeURIComponent(selectedRunId)}`;
+    } else if (fromDate && toDate) {
       url += `&from=${fromDate}&to=${toDate} 23:59:59`;
     }
     try {
@@ -532,7 +564,9 @@ function App() {
     setClientFilter('all');
     setLoadingJobs(true);
     let url = `/api/jobs/${encodeURIComponent(client.applywizz_id)}?tz=${encodeURIComponent(selectedTz)}`;
-    if (fromDate && toDate) {
+    if (viewMode === 'run' && selectedRunId) {
+      url += `&run_id=${encodeURIComponent(selectedRunId)}`;
+    } else if (fromDate && toDate) {
       url += `&from=${fromDate}&to=${toDate} 23:59:59`;
     }
     try {
@@ -807,6 +841,7 @@ function App() {
   // Reactive data fetching
   useEffect(() => {
     if (isAuthenticated) {
+      fetchRuns();
       fetchStats();
       fetchErrors();
       fetchLogs();
@@ -814,7 +849,7 @@ function App() {
       const interval = setInterval(fetchLogs, 4000);
       return () => clearInterval(interval);
     }
-  }, [isAuthenticated, fromDate, toDate, selectedTz]);
+  }, [isAuthenticated, fromDate, toDate, selectedTz, viewMode, selectedRunId]);
 
   useEffect(() => {
     if (selectedClient) {
@@ -1114,22 +1149,196 @@ function App() {
               <span>{isArchiving ? 'Archiving...' : 'Archive Old Jobs'}</span>
             </button>
 
-            {/* Date Range Modal Trigger */}
-            <button
-              type="button"
-              onClick={openDatePicker}
-              className="flex items-center gap-2 bg-zinc-950 hover:bg-zinc-900 active:bg-zinc-850 border border-blue-500/40 hover:border-blue-500/80 rounded-xl px-3 py-1.5 text-xs text-zinc-100 transition-all shadow-sm group cursor-pointer"
-              title="Filter by Date Range"
-            >
-              <span className="font-medium text-zinc-200">
-                {formatFriendly(fromDate)}
-              </span>
-              <ArrowRight className="w-3 h-3 text-zinc-400 group-hover:text-blue-400 transition-colors" />
-              <span className="font-medium text-zinc-200">
-                {formatFriendly(toDate)}
-              </span>
-              <Calendar className="w-3.5 h-3.5 text-blue-400 ml-0.5" />
-            </button>
+            {/* View Mode Toggle: Date vs Run */}
+            <div className="flex items-center bg-zinc-900 border border-zinc-800 rounded-xl p-0.5 shadow-inner">
+              <button
+                type="button"
+                onClick={() => setViewMode('date')}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${
+                  viewMode === 'date'
+                    ? 'bg-blue-600 text-white shadow-sm font-semibold'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+                title="Filter by Calendar Date Window"
+              >
+                <Calendar className="w-3.5 h-3.5" />
+                <span>By Date</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setViewMode('run');
+                  if (runsList.length === 0) fetchRuns();
+                }}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${
+                  viewMode === 'run'
+                    ? 'bg-blue-600 text-white shadow-sm font-semibold'
+                    : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+                title="Filter by Specific Operational Run (5 PM - 2 AM)"
+              >
+                <Zap className="w-3.5 h-3.5" />
+                <span>By Run</span>
+              </button>
+            </div>
+
+            {viewMode === 'run' ? (
+              <>
+                {/* Run Selector Dropdown */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setIsRunDropdownOpen(!isRunDropdownOpen)}
+                    className="flex items-center gap-2 bg-zinc-950 hover:bg-zinc-900 active:bg-zinc-850 border border-blue-500/40 hover:border-blue-500/80 rounded-xl px-3 py-1.5 text-xs text-zinc-100 transition-all shadow-sm group cursor-pointer"
+                    title="Select Operational Run"
+                  >
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${selectedRunObj?.status === 'running' ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400'}`} />
+                    <span className="font-semibold text-zinc-100 max-w-[200px] truncate">
+                      {selectedRunObj?.name || selectedRunId || 'Select Run'}
+                    </span>
+                    {selectedRunObj?.total_completed !== undefined && (
+                      <span className="text-[10px] bg-zinc-800 text-zinc-300 px-1.5 py-0.5 rounded-md font-mono">
+                        {selectedRunObj.total_completed} applied
+                      </span>
+                    )}
+                    <ChevronDown className="w-3.5 h-3.5 text-zinc-400" />
+                  </button>
+
+                  {isRunDropdownOpen && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setIsRunDropdownOpen(false)} />
+                      <div className="absolute top-full right-0 mt-2 z-50 w-72 bg-[#000000] border border-zinc-800 rounded-2xl p-1.5 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100 max-h-80 overflow-y-auto">
+                        <div className="px-2.5 py-1 text-[10px] font-bold text-zinc-400 uppercase tracking-wider border-b border-zinc-800 mb-1 flex items-center justify-between">
+                          <span>Select Operational Run</span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              fetchRuns();
+                            }}
+                            className="hover:text-blue-400 transition-colors p-0.5 cursor-pointer"
+                            title="Refresh Runs List"
+                          >
+                            <RefreshCw className={`w-3 h-3 ${loadingRuns ? 'animate-spin text-blue-400' : ''}`} />
+                          </button>
+                        </div>
+                        {loadingRuns ? (
+                          <div className="p-3 text-xs text-zinc-500 text-center">Loading runs...</div>
+                        ) : runsList.length === 0 ? (
+                          <div className="p-3 text-xs text-zinc-500 text-center">No runs logged yet</div>
+                        ) : (
+                          runsList.map(run => (
+                            <button
+                              key={run.run_id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedRunId(run.run_id);
+                                setIsRunDropdownOpen(false);
+                              }}
+                              className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs transition-all ${
+                                selectedRunId === run.run_id
+                                  ? 'bg-blue-600 text-white font-semibold shadow-md shadow-blue-600/30'
+                                  : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
+                              }`}
+                            >
+                              <div className="flex flex-col text-left">
+                                <div className="flex items-center gap-1.5">
+                                  <span className={`w-1.5 h-1.5 rounded-full ${run.status === 'running' ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400'}`} />
+                                  <span className="font-bold">{run.name}</span>
+                                </div>
+                                <span className="text-[10px] opacity-75 font-mono">{run.run_id}</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] bg-black/30 px-1.5 py-0.5 rounded font-mono">
+                                  {run.total_completed || 0}
+                                </span>
+                                {selectedRunId === run.run_id && <CheckCircle2 className="w-3.5 h-3.5 text-white shrink-0" />}
+                              </div>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Run Refresh Button */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    fetchRuns();
+                    fetchStats();
+                    fetchErrors();
+                  }}
+                  className="px-2.5 py-1.5 bg-zinc-950 hover:bg-zinc-900 border border-zinc-800 rounded-xl text-xs text-zinc-300 hover:text-white transition-all cursor-pointer shadow-sm flex items-center gap-1"
+                  title="Refresh Run Metrics"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loadingStats ? 'animate-spin text-blue-400' : 'text-zinc-400'}`} />
+                  <span>Refresh</span>
+                </button>
+              </>
+            ) : (
+              <>
+                {/* Date Range Modal Trigger */}
+                <button
+                  type="button"
+                  onClick={openDatePicker}
+                  className="flex items-center gap-2 bg-zinc-950 hover:bg-zinc-900 active:bg-zinc-850 border border-blue-500/40 hover:border-blue-500/80 rounded-xl px-3 py-1.5 text-xs text-zinc-100 transition-all shadow-sm group cursor-pointer"
+                  title="Filter by Date Range"
+                >
+                  <span className="font-medium text-zinc-200">
+                    {formatFriendly(fromDate)}
+                  </span>
+                  <ArrowRight className="w-3 h-3 text-zinc-400 group-hover:text-blue-400 transition-colors" />
+                  <span className="font-medium text-zinc-200">
+                    {formatFriendly(toDate)}
+                  </span>
+                  <Calendar className="w-3.5 h-3.5 text-blue-400 ml-0.5" />
+                </button>
+
+                {/* Timezone Selector Dropdown */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setIsTzDropdownOpen(!isTzDropdownOpen)}
+                    className="flex items-center gap-1.5 bg-zinc-950 hover:bg-zinc-900 active:bg-zinc-850 border border-zinc-700 hover:border-zinc-500 rounded-xl px-2.5 py-1.5 text-xs text-zinc-200 transition-all shadow-sm cursor-pointer"
+                    title="Select Display Timezone"
+                  >
+                    <Globe className="w-3.5 h-3.5 text-blue-400" />
+                    <span className="font-semibold text-zinc-100">{selectedTz}</span>
+                    <ChevronDown className="w-3 h-3 text-zinc-400" />
+                  </button>
+
+                  {isTzDropdownOpen && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setIsTzDropdownOpen(false)} />
+                      <div className="absolute top-full right-0 mt-2 z-50 w-48 bg-[#000000] border border-zinc-800 rounded-2xl p-1.5 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100">
+                        <div className="px-2.5 py-1 text-[10px] font-bold text-zinc-400 uppercase tracking-wider border-b border-zinc-800 mb-1">
+                          Display Timezone
+                        </div>
+                        {TIMEZONE_OPTIONS.map(tz => (
+                          <button
+                            key={tz.key}
+                            type="button"
+                            onClick={() => handleTimezoneChange(tz.key)}
+                            className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-medium transition-all ${selectedTz === tz.key
+                                ? 'bg-blue-600 text-white font-semibold shadow-md shadow-blue-600/30'
+                                : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
+                              }`}
+                          >
+                            <div className="flex flex-col text-left">
+                              <span className="font-bold">{tz.key}</span>
+                              <span className="text-[10px] opacity-75">{tz.label}</span>
+                            </div>
+                            {selectedTz === tz.key && <CheckCircle2 className="w-3.5 h-3.5 text-white shrink-0 ml-1" />}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
 
             {/* Green Graphs Modal Button */}
             <button
@@ -1141,48 +1350,6 @@ function App() {
               <BarChart3 className="w-3.5 h-3.5 text-emerald-100" />
               <span>Graphs</span>
             </button>
-
-            {/* Timezone Selector Dropdown */}
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setIsTzDropdownOpen(!isTzDropdownOpen)}
-                className="flex items-center gap-1.5 bg-zinc-950 hover:bg-zinc-900 active:bg-zinc-850 border border-zinc-700 hover:border-zinc-500 rounded-xl px-2.5 py-1.5 text-xs text-zinc-200 transition-all shadow-sm cursor-pointer"
-                title="Select Display Timezone"
-              >
-                <Globe className="w-3.5 h-3.5 text-blue-400" />
-                <span className="font-semibold text-zinc-100">{selectedTz}</span>
-                <ChevronDown className="w-3 h-3 text-zinc-400" />
-              </button>
-
-              {isTzDropdownOpen && (
-                <>
-                  <div className="fixed inset-0 z-40" onClick={() => setIsTzDropdownOpen(false)} />
-                  <div className="absolute top-full right-0 mt-2 z-50 w-48 bg-[#000000] border border-zinc-800 rounded-2xl p-1.5 shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-100">
-                    <div className="px-2.5 py-1 text-[10px] font-bold text-zinc-400 uppercase tracking-wider border-b border-zinc-800 mb-1">
-                      Display Timezone
-                    </div>
-                    {TIMEZONE_OPTIONS.map(tz => (
-                      <button
-                        key={tz.key}
-                        type="button"
-                        onClick={() => handleTimezoneChange(tz.key)}
-                        className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-medium transition-all ${selectedTz === tz.key
-                            ? 'bg-blue-600 text-white font-semibold shadow-md shadow-blue-600/30'
-                            : 'text-zinc-300 hover:text-white hover:bg-zinc-800/80'
-                          }`}
-                      >
-                        <div className="flex flex-col text-left">
-                          <span className="font-bold">{tz.key}</span>
-                          <span className="text-[10px] opacity-75">{tz.label}</span>
-                        </div>
-                        {selectedTz === tz.key && <CheckCircle2 className="w-3.5 h-3.5 text-white shrink-0 ml-1" />}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
           </div>
 
           {/* Right: Logout Button */}
@@ -1319,7 +1486,9 @@ function App() {
                   {renderNavMenu("text-blue-400")}
                   <div>
                     <h2 className="text-base font-semibold text-white tracking-tight">Client Performance Overview</h2>
-                    <p className="text-xs text-zinc-400">Date window: {fromDate} to {toDate}</p>
+                    <p className="text-xs text-zinc-400">
+                      {viewMode === 'run' ? `Run: ${selectedRunObj?.name || selectedRunId || 'Selected Run'}` : `Date window: ${fromDate} to ${toDate}`}
+                    </p>
                   </div>
                 </div>
                 <div className="text-xs text-zinc-400">
@@ -1792,7 +1961,9 @@ function App() {
                       <AlertOctagon className="w-4 h-4 text-rose-500" />
                       <span>Failed Applications</span>
                     </h2>
-                    <p className="text-xs text-zinc-400">Inspection list for jobs that encountered errors ({fromDate} to {toDate})</p>
+                    <p className="text-xs text-zinc-400">
+                      Inspection list for jobs that encountered errors ({viewMode === 'run' ? (selectedRunObj?.name || selectedRunId || 'Selected Run') : `${fromDate} to ${toDate}`})
+                    </p>
                   </div>
                 </div>
 
@@ -2001,7 +2172,7 @@ function App() {
                   </h2>
                 </div>
                 <p className="text-xs text-zinc-400 mt-0.5">
-                  {selectedClient.company_email || 'No company email assigned'} &bull; Date: {fromDate} to {toDate}
+                  {selectedClient.company_email || 'No company email assigned'} &bull; {viewMode === 'run' ? `Run: ${selectedRunObj?.name || selectedRunId || 'Selected Run'}` : `Date: ${fromDate} to ${toDate}`}
                 </p>
               </div>
 
@@ -2699,6 +2870,9 @@ function App() {
         isOpen={isGraphsModalOpen}
         onClose={() => setIsGraphsModalOpen(false)}
         selectedTz={selectedTz}
+        viewMode={viewMode}
+        selectedRunId={selectedRunId}
+        selectedRunObj={selectedRunObj}
       />
 
     </div>

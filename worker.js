@@ -110,6 +110,40 @@ let consecutiveEmptyPolls = 0;
 let fatalLoginClients = new Set();
 let isRunActive = false;
 let isArchivingInProgress = false;
+let currentRunId = null;
+
+function getTargetCycleDate(date = new Date()) {
+    const cycleMs = date.getTime() + (5.5 * 3600 * 1000) - (17 * 3600 * 1000);
+    return new Date(cycleMs).toISOString().slice(0, 10);
+}
+
+async function getOrCreateDailyRun(targetDate = getTargetCycleDate()) {
+    const runId = `RUN-${targetDate}`;
+    try {
+        const existing = await queryDB('SELECT * FROM dicev2_runs WHERE run_id = $1', [runId]);
+        if (existing.length > 0) {
+            currentRunId = runId;
+            sysLog(`[RUN] Attached to active run session: ${runId}`);
+            return existing[0];
+        }
+        const parts = targetDate.split('-');
+        const d = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+        const formattedDate = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }).format(d);
+        const runName = `Run: ${formattedDate} (5 PM – 2 AM)`;
+        await queryDB(`
+            INSERT INTO dicev2_runs (run_id, name, run_type, status, target_date, started_at)
+            VALUES ($1, $2, 'scheduled', 'running', $3, CURRENT_TIMESTAMP)
+            ON CONFLICT (run_id) DO UPDATE SET status = 'running'
+        `, [runId, runName, targetDate]);
+        currentRunId = runId;
+        sysLog(`[RUN] Registered new daily run session: ${runId} ("${runName}")`);
+        return { run_id: runId, name: runName, status: 'running' };
+    } catch (e) {
+        sysLog(`Error in getOrCreateDailyRun: ${e.message}`);
+        currentRunId = runId;
+        return { run_id: runId };
+    }
+}
 
 // --- LOGGING HELPERS ---
 function sysLog(msg) {
@@ -762,9 +796,9 @@ async function runAutomation(job) {
         // Write exactly to Azure DB specifications
         try {
             await queryDB(`
-                INSERT INTO dicev2_applied_jobs (applywizz_id, url, name, company, status, reason, email_proof, screenshot)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            `, [applywizz_id, url, job_name, company, jobStatus, jobReason, JSON.stringify(emailProof), screenshotUrl]);
+                INSERT INTO dicev2_applied_jobs (applywizz_id, url, name, company, status, reason, email_proof, screenshot, run_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            `, [applywizz_id, url, job_name, company, jobStatus, jobReason, JSON.stringify(emailProof), screenshotUrl, currentRunId]);
             log(applywizz_id, `Job Finished with status: ${jobStatus}. Saved to PostgreSQL.`);
 
             if (jobStatus === 'Completed') {
@@ -972,6 +1006,29 @@ async function terminateJobRun(reason) {
         globalBrowser = null;
     }
     isBrowserIdleClosed = false;
+
+    if (currentRunId) {
+        try {
+            const stats = await queryDB(`
+                SELECT 
+                    COUNT(*) FILTER (WHERE status = 'Completed') as completed,
+                    COUNT(*) FILTER (WHERE status != 'Completed') as failed
+                FROM dicev2_applied_jobs WHERE run_id = $1
+            `, [currentRunId]);
+            await queryDB(`
+                UPDATE dicev2_runs 
+                SET status = 'completed', 
+                    ended_at = CURRENT_TIMESTAMP,
+                    total_completed = $2,
+                    total_failed = $3
+                WHERE run_id = $1
+            `, [currentRunId, parseInt(stats[0]?.completed || 0, 10), parseInt(stats[0]?.failed || 0, 10)]);
+            sysLog(`[RUN] Finalized run session: ${currentRunId} (${stats[0]?.completed} completed, ${stats[0]?.failed} failed)`);
+        } catch (e) {
+            sysLog(`[RUN] Error finalizing run session: ${e.message}`);
+        }
+        currentRunId = null;
+    }
 
     activeUsers.clear();
     clientSuccessCounts = {};
@@ -1187,6 +1244,7 @@ async function pollAndIngestNewJobs() {
 
         await syncMasterBacklog();
         await syncLiveQueue();
+        await getOrCreateDailyRun();
 
         if (jobQueue.some(j => j.status === 'PENDING')) {
             await ensureBrowserOpen();
@@ -1231,6 +1289,22 @@ async function initializeDatabase() {
             screenshot TEXT
         );
         ALTER TABLE dicev2_applied_jobs ADD COLUMN IF NOT EXISTS screenshot TEXT;
+        ALTER TABLE dicev2_applied_jobs ADD COLUMN IF NOT EXISTS run_id VARCHAR;
+        CREATE TABLE IF NOT EXISTS dicev2_runs (
+            id SERIAL PRIMARY KEY,
+            run_id VARCHAR UNIQUE NOT NULL,
+            name VARCHAR NOT NULL,
+            run_type VARCHAR DEFAULT 'scheduled',
+            status VARCHAR DEFAULT 'running',
+            started_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            ended_at TIMESTAMP WITH TIME ZONE,
+            target_date DATE NOT NULL,
+            total_completed INT DEFAULT 0,
+            total_failed INT DEFAULT 0,
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE INDEX IF NOT EXISTS idx_dicev2_runs_started_at ON dicev2_runs (started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_dicev2_applied_jobs_run_id ON dicev2_applied_jobs (run_id);
         CREATE TABLE IF NOT EXISTS dicev2_logs (
             id SERIAL PRIMARY KEY,
             applywizz_id VARCHAR,
@@ -1433,6 +1507,7 @@ async function startJobRun(isFresh = true) {
 
         await syncMasterBacklog();
         await syncLiveQueue();
+        await getOrCreateDailyRun();
 
         if (!globalBrowser) {
             sysLog('[MERGE] Launching Chromium browser for merged clients...');
@@ -1462,6 +1537,7 @@ async function startJobRun(isFresh = true) {
     }
 
     await initializeDatabase();
+    await getOrCreateDailyRun();
     await queryDB('TRUNCATE TABLE dicev2_live_queue, dicev2_master_backlog');
 
     // 1. Fetch valid jobs < 24 hours old
@@ -1732,6 +1808,40 @@ function getTimeFilter(from, to, tzKey, startIdx = 1) {
     };
 }
 
+// --- RUNS API ---
+app.get('/api/runs', async (req, res) => {
+    try {
+        const runs = await queryDB(`
+            SELECT 
+                r.id,
+                r.run_id,
+                r.name,
+                r.run_type,
+                r.status,
+                r.started_at,
+                r.ended_at,
+                r.target_date,
+                COALESCE(j.completed, r.total_completed) as total_completed,
+                COALESCE(j.failed, r.total_failed) as total_failed
+            FROM dicev2_runs r
+            LEFT JOIN (
+                SELECT 
+                    run_id,
+                    COUNT(*) FILTER (WHERE status = 'Completed') as completed,
+                    COUNT(*) FILTER (WHERE status != 'Completed') as failed
+                FROM dicev2_applied_jobs
+                WHERE run_id IS NOT NULL
+                GROUP BY run_id
+            ) j ON r.run_id = j.run_id
+            ORDER BY r.started_at DESC
+            LIMIT 50
+        `);
+        res.json(runs);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // --- ANALYTICS APIS FOR GRAPHS ---
 app.get('/api/analytics/daily', async (req, res) => {
     try {
@@ -1764,11 +1874,53 @@ app.get('/api/analytics/daily', async (req, res) => {
 
 app.get('/api/analytics/hourly', async (req, res) => {
     try {
-        const { date, tz = 'IST' } = req.query;
-        if (!date) {
-            return res.status(400).json({ error: 'date query parameter is required (YYYY-MM-DD)' });
-        }
+        const { date, tz = 'IST', run_id } = req.query;
         const tzName = TZ_MAP[tz] || 'Asia/Kolkata';
+
+        if (run_id) {
+            const rows = await queryDB(`
+                SELECT 
+                    EXTRACT(HOUR FROM (time AT TIME ZONE 'UTC' AT TIME ZONE $1))::int as hour,
+                    COUNT(*)::int as count,
+                    COUNT(DISTINCT applywizz_id)::int as clients
+                FROM dicev2_applied_jobs
+                WHERE status = 'Completed' AND run_id = $2
+                GROUP BY hour
+                ORDER BY hour ASC
+            `, [tzName, run_id]);
+
+            const statsByHour = {};
+            for (const r of rows) {
+                statsByHour[r.hour] = { count: r.count, clients: r.clients };
+            }
+
+            // Sequential 9-hour timeline for the run: 5 PM to 2 AM
+            const runHours = [
+                { sqlHour: 17, label: '5 PM', displayRange: '5:00 PM - 6:00 PM' },
+                { sqlHour: 18, label: '6 PM', displayRange: '6:00 PM - 7:00 PM' },
+                { sqlHour: 19, label: '7 PM', displayRange: '7:00 PM - 8:00 PM' },
+                { sqlHour: 20, label: '8 PM', displayRange: '8:00 PM - 9:00 PM' },
+                { sqlHour: 21, label: '9 PM', displayRange: '9:00 PM - 10:00 PM' },
+                { sqlHour: 22, label: '10 PM', displayRange: '10:00 PM - 11:00 PM' },
+                { sqlHour: 23, label: '11 PM', displayRange: '11:00 PM - 12:00 AM' },
+                { sqlHour: 0, label: '12 AM', displayRange: '12:00 AM - 1:00 AM' },
+                { sqlHour: 1, label: '1 AM', displayRange: '1:00 AM - 2:00 AM' }
+            ];
+
+            const hourlyData = runHours.map((slot, idx) => ({
+                hour: idx + 1,
+                label: slot.label,
+                displayRange: slot.displayRange,
+                count: statsByHour[slot.sqlHour]?.count || 0,
+                clients: statsByHour[slot.sqlHour]?.clients || 0
+            }));
+
+            return res.json(hourlyData);
+        }
+
+        if (!date) {
+            return res.status(400).json({ error: 'date or run_id query parameter is required (YYYY-MM-DD)' });
+        }
 
         const rows = await queryDB(`
             SELECT 
@@ -2028,10 +2180,13 @@ app.get('/api/analytics/graph-data', (req, res) => {
 
 app.get('/api/stats', async (req, res) => {
     try {
-        const { from, to, tz = 'IST' } = req.query;
+        const { from, to, tz = 'IST', run_id } = req.query;
         let timeFilter = "";
         let params = [];
-        if (from && to) {
+        if (run_id) {
+            timeFilter = `WHERE run_id = $1`;
+            params = [run_id];
+        } else if (from && to) {
             const filter = getTimeFilter(from, to, tz, 1);
             timeFilter = `WHERE ${filter.clause}`;
             params = filter.params;
@@ -2120,10 +2275,13 @@ app.get('/api/stats', async (req, res) => {
 
 app.get('/api/errors', async (req, res) => {
     try {
-        const { from, to, tz = 'IST' } = req.query;
+        const { from, to, tz = 'IST', run_id } = req.query;
         let timeFilter = "WHERE status = 'Failed'";
         const params = [];
-        if (from && to) {
+        if (run_id) {
+            timeFilter += " AND run_id = $1";
+            params.push(run_id);
+        } else if (from && to) {
             const filter = getTimeFilter(from, to, tz, 1);
             timeFilter += ` AND ${filter.clause}`;
             params.push(...filter.params);
@@ -2599,6 +2757,7 @@ app.post('/api/run-client', async (req, res) => {
 
         await syncMasterBacklog();
         await syncLiveQueue();
+        await getOrCreateDailyRun();
 
         // Wake up automation engine if idle
         isRunActive = true;
@@ -2631,10 +2790,13 @@ app.post('/api/run-client', async (req, res) => {
 app.get('/api/jobs/:applywizz_id', async (req, res) => {
     try {
         const { applywizz_id } = req.params;
-        const { from, to, tz = 'IST' } = req.query;
+        const { from, to, tz = 'IST', run_id } = req.query;
         let timeFilter = "";
         const params = [applywizz_id];
-        if (from && to) {
+        if (run_id) {
+            timeFilter = "AND run_id = $2";
+            params.push(run_id);
+        } else if (from && to) {
             const filter = getTimeFilter(from, to, tz, 2);
             timeFilter = `AND ${filter.clause}`;
             params.push(...filter.params);

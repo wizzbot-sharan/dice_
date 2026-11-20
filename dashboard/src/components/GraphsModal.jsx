@@ -64,7 +64,7 @@ function getTodayInTz(tz) {
   }
 }
 
-export default function GraphsModal({ isOpen, onClose, selectedTz = 'IST' }) {
+export default function GraphsModal({ isOpen, onClose, selectedTz = 'IST', viewMode = 'date', selectedRunId = null, selectedRunObj = null }) {
   const [showLabels, setShowLabels] = useState(true);
 
   const todayStr = useMemo(() => getTodayInTz(selectedTz), [selectedTz]);
@@ -139,14 +139,20 @@ export default function GraphsModal({ isOpen, onClose, selectedTz = 'IST' }) {
 
   // Fetch hourly distribution
   useEffect(() => {
-    if (!isOpen || !hourlyDate) return;
+    if (!isOpen) return;
+    if (viewMode !== 'run' && !hourlyDate) return;
     let cancelled = false;
 
     const fetchHourly = async () => {
       setLoadingHourly(true);
       setHourlyError('');
       try {
-        const url = `/api/analytics/hourly?date=${encodeURIComponent(hourlyDate)}&tz=${encodeURIComponent(selectedTz)}&_t=${Date.now()}`;
+        let url;
+        if (viewMode === 'run' && selectedRunId) {
+          url = `/api/analytics/hourly?run_id=${encodeURIComponent(selectedRunId)}&_t=${Date.now()}`;
+        } else {
+          url = `/api/analytics/hourly?date=${encodeURIComponent(hourlyDate)}&tz=${encodeURIComponent(selectedTz)}&_t=${Date.now()}`;
+        }
         const res = await fetch(url, { cache: 'no-store' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
@@ -162,7 +168,7 @@ export default function GraphsModal({ isOpen, onClose, selectedTz = 'IST' }) {
 
     fetchHourly();
     return () => { cancelled = true; };
-  }, [isOpen, hourlyDate, selectedTz]);
+  }, [isOpen, hourlyDate, selectedTz, viewMode, selectedRunId]);
 
   // Metrics
   const totalDailyCompleted = useMemo(() => {
@@ -389,7 +395,9 @@ export default function GraphsModal({ isOpen, onClose, selectedTz = 'IST' }) {
               <div className="flex items-center gap-2">
                 <span className="w-2.5 h-2.5 rounded-full bg-cyan-400" />
                 <h2 className="text-sm sm:text-base font-bold text-white tracking-tight">
-                  24-Hour Distribution for {hourlyDate}
+                  {viewMode === 'run'
+                    ? `Chronological 9-Hour Run Distribution (${selectedRunObj?.name || selectedRunId || 'Selected Run'})`
+                    : `24-Hour Distribution for ${hourlyDate}`}
                 </h2>
               </div>
 
@@ -408,34 +416,43 @@ export default function GraphsModal({ isOpen, onClose, selectedTz = 'IST' }) {
 
             {/* Hourly Target Controls & Stats */}
             <div className="flex flex-wrap items-center gap-2">
-              <div className="flex items-center bg-zinc-950 border border-zinc-800 rounded-lg p-0.5 text-xs">
-                <button
-                  type="button"
-                  onClick={() => handleQuickHourly('today')}
-                  className={`px-2.5 py-0.5 rounded font-medium transition-colors ${
-                    hourlyDate === todayStr ? 'bg-cyan-500/20 text-cyan-300' : 'text-zinc-400 hover:text-zinc-200'
-                  }`}
-                >
-                  Today
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleQuickHourly('yesterday')}
-                  className="px-2.5 py-0.5 rounded text-zinc-400 hover:text-zinc-200 font-medium transition-colors"
-                >
-                  Yesterday
-                </button>
-              </div>
+              {viewMode !== 'run' ? (
+                <>
+                  <div className="flex items-center bg-zinc-950 border border-zinc-800 rounded-lg p-0.5 text-xs">
+                    <button
+                      type="button"
+                      onClick={() => handleQuickHourly('today')}
+                      className={`px-2.5 py-0.5 rounded font-medium transition-colors ${
+                        hourlyDate === todayStr ? 'bg-cyan-500/20 text-cyan-300' : 'text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      Today
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleQuickHourly('yesterday')}
+                      className="px-2.5 py-0.5 rounded text-zinc-400 hover:text-zinc-200 font-medium transition-colors"
+                    >
+                      Yesterday
+                    </button>
+                  </div>
 
-              <div className="flex items-center gap-1.5 bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-0.5 text-xs">
-                <Clock className="w-3.5 h-3.5 text-cyan-400" />
-                <input
-                  type="date"
-                  value={hourlyDate}
-                  onChange={(e) => setHourlyDate(e.target.value)}
-                  className="bg-transparent text-zinc-200 outline-none text-xs font-medium cursor-pointer"
-                />
-              </div>
+                  <div className="flex items-center gap-1.5 bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-0.5 text-xs">
+                    <Clock className="w-3.5 h-3.5 text-cyan-400" />
+                    <input
+                      type="date"
+                      value={hourlyDate}
+                      onChange={(e) => setHourlyDate(e.target.value)}
+                      className="bg-transparent text-zinc-200 outline-none text-xs font-medium cursor-pointer"
+                    />
+                  </div>
+                </>
+              ) : (
+                <div className="flex items-center gap-1.5 bg-cyan-950/40 border border-cyan-800/60 rounded-lg px-2.5 py-1 text-xs text-cyan-300">
+                  <Clock className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>5:00 PM &rarr; 2:00 AM IST</span>
+                </div>
+              )}
 
               <div className="flex items-center gap-1.5 text-xs font-semibold">
                 <div className="px-2.5 py-0.5 rounded-lg bg-cyan-500/10 border border-cyan-500/30 text-cyan-400">
